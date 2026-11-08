@@ -12,6 +12,7 @@ namespace RoboClash
         private RoboClashRobotCombat combat;
         private RoboClashRobotMovement movement;
         private RoboClashPhoneInputServer phoneServer;
+        private RoboClashPlayerInputRouter inputRouter;
         private RoboClashMatchManager matchManager;
         private RobotArenaController robotController;
         private bool guardReleaseRequired;
@@ -24,6 +25,7 @@ namespace RoboClash
             combat = GetComponent<RoboClashRobotCombat>();
             movement = GetComponent<RoboClashRobotMovement>();
             phoneServer = RoboClashPhoneInputServer.Active;
+            inputRouter = GetComponent<RoboClashPlayerInputRouter>();
             matchManager = FindAnyObjectByType<RoboClashMatchManager>();
             robotController = GetComponent<RobotArenaController>();
         }
@@ -39,7 +41,9 @@ namespace RoboClash
         private void Update()
         {
             phoneServer = RoboClashPhoneInputServer.Active;
-            var guardRequested = phoneServer != null && phoneServer.CurrentInput.Guard;
+            var playerIndex = inputRouter != null ? inputRouter.PlayerIndex : -1;
+            var guardRequested = playerIndex >= 0 && phoneServer != null &&
+                                 phoneServer.GetCurrentInput(playerIndex).Guard;
             if (!guardRequested)
                 guardReleaseRequired = false;
 

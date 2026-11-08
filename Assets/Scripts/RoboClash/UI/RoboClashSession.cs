@@ -22,6 +22,8 @@ namespace RoboClash
         private const string KnockoutLivesKey = "RoboClash.KnockoutLives";
         private const string RespawnsEnabledKey = "RoboClash.RespawnsEnabled";
         private const string DuelUsesKillTargetKey = "RoboClash.DuelUsesKillTarget";
+        private const string DuelPhonePlayerCountKey = "RoboClash.DuelPhonePlayerCount";
+        private const string DuelRobotKeyPrefix = "RoboClash.DuelRobot";
         private const string LocalPlayerCountKey = "RoboClash.LocalPlayerCount";
         private const string MultiplayerRobotKeyPrefix = "RoboClash.MPRobot";
         private const string CameraModeKey = "RoboClash.CameraMode";
@@ -39,8 +41,14 @@ namespace RoboClash
         private static int knockoutLives;
         private static bool respawnsEnabled;
         private static bool duelUsesKillTarget;
+        private static int duelPhonePlayerCount = 2;
         private static int localPlayerCount = 2;
         private static RoboClashRobotType[] multiplayerRobots =
+        {
+            RoboClashRobotType.Volt, RoboClashRobotType.Titan,
+            RoboClashRobotType.Shadow, RoboClashRobotType.Spark
+        };
+        private static RoboClashRobotType[] duelRobots =
         {
             RoboClashRobotType.Volt, RoboClashRobotType.Titan,
             RoboClashRobotType.Shadow, RoboClashRobotType.Spark
@@ -140,12 +148,30 @@ namespace RoboClash
             get { LoadPreferences(); return localPlayerCount; }
         }
 
+        public static int DuelPhonePlayerCount
+        {
+            get
+            {
+                LoadPreferences();
+                return duelPhonePlayerCount;
+            }
+        }
+
         public static RoboClashRobotType[] MultiplayerRobots
         {
             get
             {
                 LoadPreferences();
                 return (RoboClashRobotType[])multiplayerRobots.Clone();
+            }
+        }
+
+        public static RoboClashRobotType[] DuelRobots
+        {
+            get
+            {
+                LoadPreferences();
+                return (RoboClashRobotType[])duelRobots.Clone();
             }
         }
 
@@ -200,7 +226,7 @@ namespace RoboClash
         {
             LoadPreferences();
             selectedRobot = robot;
-            opponentCount = Mathf.Clamp(opponents, 1, 24);
+            opponentCount = Mathf.Clamp(opponents, 0, 24);
             PlayerPrefs.SetInt(SelectedRobotKey, (int)selectedRobot);
             PlayerPrefs.SetInt(OpponentCountKey, opponentCount);
             PlayerPrefs.Save();
@@ -304,6 +330,29 @@ namespace RoboClash
             PlayerPrefs.Save();
         }
 
+        public static void SaveDuelPhonePlayerCount(int playerCount)
+        {
+            LoadPreferences();
+            duelPhonePlayerCount = playerCount == 4 ? 4 : 2;
+            PlayerPrefs.SetInt(DuelPhonePlayerCountKey, duelPhonePlayerCount);
+            PlayerPrefs.Save();
+        }
+
+        public static void SaveDuelRobotSelection(RoboClashRobotType[] robots)
+        {
+            LoadPreferences();
+            if (robots == null || robots.Length < duelPhonePlayerCount)
+                throw new ArgumentException("A robot selection is required for every Duel player.", nameof(robots));
+
+            for (var i = 0; i < duelRobots.Length; i++)
+            {
+                if (i < robots.Length && Enum.IsDefined(typeof(RoboClashRobotType), robots[i]))
+                    duelRobots[i] = robots[i];
+                PlayerPrefs.SetInt(DuelRobotKeyPrefix + i, (int)duelRobots[i]);
+            }
+            PlayerPrefs.Save();
+        }
+
         public static bool ConsumeMatchSelection(out RoboClashRobotType robot, out int opponents,
             out RoboClashAIDifficulty difficulty, out RoboClashGameMode selectedGameMode,
             out int selectedSurvivalGrowth, out float selectedWaveBreakSeconds,
@@ -339,8 +388,9 @@ namespace RoboClash
                             savedRobot <= (int)RoboClashRobotType.Spark
                 ? (RoboClashRobotType)savedRobot
                 : RoboClashRobotType.Volt;
-            opponentCount = Mathf.Clamp(PlayerPrefs.GetInt(OpponentCountKey, 3), 1, 24);
+            opponentCount = Mathf.Clamp(PlayerPrefs.GetInt(OpponentCountKey, 3), 0, 24);
             localPlayerCount = Mathf.Clamp(PlayerPrefs.GetInt(LocalPlayerCountKey, 2), 2, 4);
+            duelPhonePlayerCount = PlayerPrefs.GetInt(DuelPhonePlayerCountKey, 2) == 4 ? 4 : 2;
             if (multiplayerRobots == null || multiplayerRobots.Length != 4)
                 multiplayerRobots = new[]
                 {
@@ -352,6 +402,11 @@ namespace RoboClash
                 var savedType = PlayerPrefs.GetInt(MultiplayerRobotKeyPrefix + i, i);
                 multiplayerRobots[i] = Enum.IsDefined(typeof(RoboClashRobotType), savedType)
                     ? (RoboClashRobotType)savedType
+                    : (RoboClashRobotType)i;
+
+                var savedDuelType = PlayerPrefs.GetInt(DuelRobotKeyPrefix + i, i);
+                duelRobots[i] = Enum.IsDefined(typeof(RoboClashRobotType), savedDuelType)
+                    ? (RoboClashRobotType)savedDuelType
                     : (RoboClashRobotType)i;
             }
             var savedDifficulty = PlayerPrefs.GetInt(AIDifficultyKey, (int)RoboClashAIDifficulty.Normal);

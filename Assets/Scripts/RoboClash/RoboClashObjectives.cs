@@ -36,7 +36,10 @@ namespace RoboClash
                     var rule = settings.duelUsesKillTarget
                         ? $"First to {settings.killTarget} eliminations wins."
                         : $"Most eliminations after {minutes} minutes wins.";
-                    return "1v1 against one robot. " + rule +
+                    var aiText = settings.aiOpponents > 0
+                        ? $" {settings.aiOpponents} AI opponent(s) can join."
+                        : " No AI opponents.";
+                    return $"{settings.localPlayerCount} phone players." + aiText + " " + rule +
                            (settings.duelRespawnsEnabled ? string.Empty :
                                " One life each: last robot standing wins.");
                 case RoboClashGameMode.Survival:

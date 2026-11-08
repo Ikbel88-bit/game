@@ -102,7 +102,8 @@ namespace RoboClash.UI
 
             matchManager = GetComponentInParent<RoboClashMatchManager>();
             buildingMultiplayerViewport = matchManager != null &&
-                                          matchManager.GameMode == RoboClashGameMode.Multiplayer;
+                                          (matchManager.GameMode == RoboClashGameMode.Multiplayer ||
+                                           matchManager.GameMode == RoboClashGameMode.Duel);
             BuildInterface();
         }
 
@@ -207,8 +208,11 @@ namespace RoboClash.UI
                     ? playerController.GetComponent<RoboClashPlayerInputRouter>()
                     : null;
                 var playerIndex = inputRouter != null ? inputRouter.PlayerIndex : -1;
-                playerKillsText.text =
-                    $"YOU {matchManager.GetPlayerKills(playerIndex)} / {matchManager.KillTarget}";
+                var kills = matchManager.GetPlayerKills(playerIndex);
+                playerKillsText.text = matchManager.GameMode == RoboClashGameMode.Duel &&
+                                       !matchManager.DuelUsesKillTarget
+                    ? $"YOU {kills} KILLS"
+                    : $"YOU {kills} / {matchManager.KillTarget}";
             }
 
             if (matchManager.State == RoboClashMatchState.Playing && playerAbilities != null)
@@ -946,9 +950,16 @@ namespace RoboClash.UI
                     combatantsText.text = $"FREE-FOR-ALL  //  {matchManager.AliveCombatantCount} ACTIVE";
                     break;
                 case RoboClashGameMode.Duel:
+                    var inputRouter = playerController != null
+                        ? playerController.GetComponent<RoboClashPlayerInputRouter>()
+                        : null;
+                    var playerIndex = inputRouter != null ? inputRouter.PlayerIndex : 0;
+                    var kills = playerIndex >= 0
+                        ? matchManager.GetPlayerKills(playerIndex)
+                        : matchManager.PlayerKills;
                     combatantsText.text = matchManager.DuelUsesKillTarget
-                        ? $"DUEL  //  {matchManager.PlayerKills}/{matchManager.KillTarget} KILLS"
-                        : $"DUEL  //  {matchManager.PlayerKills} PLAYER KILLS";
+                        ? $"DUEL  //  {kills}/{matchManager.KillTarget} KILLS"
+                        : $"DUEL  //  {kills} PLAYER KILLS";
                     break;
                 case RoboClashGameMode.KingOfTheArena:
                     combatantsText.text =
@@ -983,7 +994,9 @@ namespace RoboClash.UI
             gameplayRoot.SetActive(false);
             pauseRoot.SetActive(false);
             settingsPanel.Hide();
-            resultTitleText.text = statistics.GameMode == RoboClashGameMode.Multiplayer
+            resultTitleText.text = statistics.GameMode == RoboClashGameMode.Multiplayer ||
+                                   statistics.GameMode == RoboClashGameMode.Duel &&
+                                   matchManager.WinnerPlayerIndex >= 0
                 ? $"PLAYER {Mathf.Max(0, matchManager.WinnerPlayerIndex) + 1} WINS"
                 : statistics.FinalResult.ToString().ToUpperInvariant();
             resultTitleText.color = statistics.FinalResult == RoboClashMatchState.Victory
@@ -1083,6 +1096,18 @@ namespace RoboClash.UI
                 resultDetailsText.text =
                     $"{RoboClashObjectives.Title(statistics.GameMode)}\n" +
                     $"FIRST TO {matchManager.KillTarget} ELIMINATIONS\n\n" +
+                    matchManager.GetScoreboardText();
+                return;
+            }
+            if (statistics.GameMode == RoboClashGameMode.Duel &&
+                matchManager.WinnerPlayerIndex >= 0)
+            {
+                var rule = matchManager.DuelUsesKillTarget
+                    ? $"FIRST TO {matchManager.KillTarget} ELIMINATIONS"
+                    : "MOST ELIMINATIONS WHEN TIME EXPIRES";
+                resultDetailsText.text =
+                    $"{RoboClashObjectives.Title(statistics.GameMode)}\n" +
+                    $"{rule}\n\n" +
                     matchManager.GetScoreboardText();
                 return;
             }

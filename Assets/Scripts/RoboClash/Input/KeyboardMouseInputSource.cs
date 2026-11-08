@@ -6,14 +6,23 @@ namespace RoboClash
     public sealed class KeyboardMouseInputSource : IRoboClashInputSource
     {
         private readonly float fallbackMouseSensitivity;
+        private readonly int playerIndex;
+        private readonly bool allowKeyboard;
 
-        public KeyboardMouseInputSource(float fallbackMouseSensitivity = 0.12f)
+        public KeyboardMouseInputSource(float fallbackMouseSensitivity = 0.12f,
+            int playerIndex = 0, bool allowKeyboard = true)
         {
             this.fallbackMouseSensitivity = fallbackMouseSensitivity;
+            this.playerIndex = Mathf.Max(0, playerIndex);
+            this.allowKeyboard = allowKeyboard;
         }
 
         private RoboClashPhoneInputServer PhoneServer => RoboClashPhoneInputServer.Active;
-        private bool PhoneActive => RoboClashPhoneInputServer.IsPhoneActive && PhoneServer != null;
+        private bool PhoneActive => PhoneServer != null && PhoneServer.IsPhoneActiveForPlayer(playerIndex);
+        private bool KeyboardActive => allowKeyboard && playerIndex == 0;
+        private RoboClashPhoneInput PhoneInput => PhoneServer != null
+            ? PhoneServer.GetCurrentInput(playerIndex)
+            : default;
 
         public Vector2 Move
         {
@@ -22,11 +31,11 @@ namespace RoboClash
                 var input = Vector2.zero;
                 if (PhoneActive)
                 {
-                    input.x += PhoneServer.CurrentInput.MoveHorizontal;
-                    input.y += PhoneServer.CurrentInput.MoveForward;
+                    input.x += PhoneInput.MoveHorizontal;
+                    input.y += PhoneInput.MoveForward;
                 }
 
-                if (Keyboard.current != null)
+                if (KeyboardActive && Keyboard.current != null)
                 {
                     if (Keyboard.current.wKey.isPressed) input.y += 1f;
                     if (Keyboard.current.sKey.isPressed) input.y -= 1f;
@@ -42,7 +51,7 @@ namespace RoboClash
         {
             get
             {
-                if (Mouse.current == null || Cursor.lockState != CursorLockMode.Locked)
+                if (!KeyboardActive || Mouse.current == null || Cursor.lockState != CursorLockMode.Locked)
                     return Vector2.zero;
 
                 var sensitivity = RoboClashSession.MouseSensitivity;
@@ -53,40 +62,40 @@ namespace RoboClash
         }
 
         public bool FireHeld =>
-            PhoneActive && PhoneServer.CurrentInput.Shoot ||
-            Mouse.current != null && Cursor.lockState == CursorLockMode.Locked &&
+            PhoneActive && PhoneInput.Shoot ||
+            KeyboardActive && Mouse.current != null && Cursor.lockState == CursorLockMode.Locked &&
             Mouse.current.leftButton.isPressed;
 
         public bool JumpPressed =>
-            PhoneActive && PhoneServer.ConsumePressed(RoboClashPhoneAction.Jump) ||
-            Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame;
+            PhoneActive && PhoneServer.ConsumePressed(playerIndex, RoboClashPhoneAction.Jump) ||
+            KeyboardActive && Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame;
 
         public bool ReloadPressed =>
-            PhoneActive && PhoneServer.ConsumePressed(RoboClashPhoneAction.Reload) ||
-            Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame;
+            PhoneActive && PhoneServer.ConsumePressed(playerIndex, RoboClashPhoneAction.Reload) ||
+            KeyboardActive && Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame;
 
         public bool AbilityPressed =>
-            PhoneActive && PhoneServer.ConsumePressed(RoboClashPhoneAction.Ability) ||
-            Keyboard.current != null && Keyboard.current.qKey.wasPressedThisFrame;
+            PhoneActive && PhoneServer.ConsumePressed(playerIndex, RoboClashPhoneAction.Ability) ||
+            KeyboardActive && Keyboard.current != null && Keyboard.current.qKey.wasPressedThisFrame;
 
         public bool AbilityPressedThisFrame =>
-            Keyboard.current != null && Keyboard.current.qKey.wasPressedThisFrame;
+            KeyboardActive && Keyboard.current != null && Keyboard.current.qKey.wasPressedThisFrame;
 
         public bool UltimatePressed =>
-            PhoneActive && PhoneServer.ConsumePressed(RoboClashPhoneAction.Ultimate) ||
-            Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame;
+            PhoneActive && PhoneServer.ConsumePressed(playerIndex, RoboClashPhoneAction.Ultimate) ||
+            KeyboardActive && Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame;
 
         public bool UltimatePressedThisFrame =>
-            Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame;
+            KeyboardActive && Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame;
 
-        public bool PausePressed => Keyboard.current != null &&
+        public bool PausePressed => KeyboardActive && Keyboard.current != null &&
                                     (Keyboard.current.pKey.wasPressedThisFrame ||
                                      Keyboard.current.escapeKey.wasPressedThisFrame);
 
-        public bool CursorCapturePressed => Mouse.current != null &&
+        public bool CursorCapturePressed => KeyboardActive && Mouse.current != null &&
                                             Mouse.current.leftButton.wasPressedThisFrame;
 
-        public bool CursorUnlockPressed => Keyboard.current != null &&
+        public bool CursorUnlockPressed => KeyboardActive && Keyboard.current != null &&
                                            Keyboard.current.escapeKey.wasPressedThisFrame;
 
         public void ApplyPhoneAim(ref float yaw, ref float pitch, float yawScale, float pitchScale)
@@ -94,9 +103,9 @@ namespace RoboClash
             if (!PhoneActive)
                 return;
 
-            var input = PhoneServer.CurrentInput;
-            PhoneServer.ConsumeAimDelta(out var yawDelta, out var pitchDelta);
-            if (PhoneServer.HasRecentGyroAimDeltas)
+            var input = PhoneInput;
+            PhoneServer.ConsumeAimDelta(playerIndex, out var yawDelta, out var pitchDelta);
+            if (PhoneServer.HasRecentGyroAimDeltasForPlayer(playerIndex))
             {
                 yaw += yawDelta * yawScale;
                 pitch = Mathf.Clamp(pitch - pitchDelta * pitchScale, -20f, 45f);
@@ -110,13 +119,13 @@ namespace RoboClash
 
         public bool ConsumePhoneAimRecenter()
         {
-            var keyboardRequested = Keyboard.current != null &&
+            var keyboardRequested = KeyboardActive && Keyboard.current != null &&
                                     Keyboard.current.cKey.wasPressedThisFrame;
-            var phoneRequested = PhoneActive && PhoneServer.ConsumeRecenterPressed();
+            var phoneRequested = PhoneActive && PhoneServer.ConsumeRecenterPressed(playerIndex);
             if (!keyboardRequested && !phoneRequested)
                 return false;
 
-            PhoneServer?.RecenterAim();
+            PhoneServer?.RecenterAim(playerIndex);
             return true;
         }
     }

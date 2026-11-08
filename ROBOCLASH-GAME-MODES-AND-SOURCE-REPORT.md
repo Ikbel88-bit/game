@@ -12,7 +12,7 @@ The match-mode enum contains seven values. The current pre-game menu presents si
 |---|---|---|---|
 | Kill Race | Reach the selected elimination target first | A participant reaches the target | Unlimited match respawns |
 | Timed Deathmatch | Get the most eliminations before time expires | Timer expires; highest kill count wins | Unlimited match respawns |
-| Duel | Fight one AI opponent, using either a kill target or timer | Selected kill target or timed duel ends | Optional respawns |
+| Duel | 2 or 4 phone-controlled players compete, optionally joined by AI opponents | Selected kill target, timer, or last robot standing | Optional respawns |
 | Survival Waves | Survive increasingly large waves of AI opponents | Player is eliminated | No respawns; wave size increases |
 | King of the Arena | Control the center zone and accumulate control time | Timer expires; highest control score wins | Optional respawns |
 | Knockout | Be the last participant with a life remaining | One or no participants remain | Limited to the selected lives |
@@ -24,7 +24,7 @@ The pre-game screen exposes Kill Race, Timed Deathmatch, Duel, Survival Waves, K
 
 - Kill Race: 5, 10, 15, or 20 eliminations.
 - Timed Deathmatch and King of the Arena: 3, 5, or 7 minutes.
-- Duel: 5, 10, 15, or 20 eliminations, or 3, 5, or 7 minutes; respawns can be enabled or disabled.
+- Duel: 2 or 4 phone players, 0-7 optional AI opponents, 5/10/15/20 eliminations or 3/5/7 minutes; respawns can be enabled or disabled. All selected phones must connect, choose a robot in their own lobby panel, and ready up before the match starts.
 - Survival: starting enemy count, enemies added per wave, and wave-break duration.
 - Knockout: 1, 3, or 5 lives per robot.
 - King of the Arena: respawns can be enabled or disabled.
@@ -61,7 +61,7 @@ Fight for the highest elimination count during the selected 3-, 5-, or 7-minute 
 
 ### Duel
 
-A one-on-one match against AI. The player chooses either a kill target (5, 10, 15, or 20) or a time limit (3, 5, or 7 minutes). Respawns are separately configurable. A no-respawn kill-target duel ends when only one participant remains, even if nobody reached the kill target.
+A split-screen phone match for 2 or 4 players. After all phones connect, a split-panel robot lobby lets each player choose a robot and press Start; gameplay launches only after every selected player is ready. On a phone, Jump selects the next robot, Reload selects the previous robot, and Ultimate presses Start. Phones are assigned to player panels in connection order, and each phone controls its own robot and gameplay camera. The match can include 0-7 AI opponents. Players choose either a kill target (5, 10, 15, or 20) or a time limit (3, 5, or 7 minutes), and respawns are separately configurable. A no-respawn duel ends when only one participant remains, even if nobody reached the kill target.
 
 ### Survival Waves
 

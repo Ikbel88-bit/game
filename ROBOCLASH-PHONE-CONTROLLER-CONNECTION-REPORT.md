@@ -21,6 +21,12 @@ The controller app project is at `C:\Users\moham\RoboClashController`. On launch
 
 ## Unity-side implementation
 
+### Multiple phones and Duel split-screen
+
+The PC receiver accepts up to four concurrent phone connections on the same TCP port. It assigns phones in connection order: the first active connection controls Player 1, the next Player 2, and so on. The protocol remains version 1, so the existing hello, input packets, and `ack` reply are unchanged.
+
+In Duel setup, choose 2 or 4 phone players and optionally set 0-7 AI opponents. Connect all selected phones and wait for each to send valid input. The robot lobby then shows a panel for each player: use Jump to select the next robot, Reload to select the previous robot, and Ultimate to press Start. The match launches after every selected player is ready. Each phone controls its own robot and split-screen camera. If a phone times out during play, only that player's phone input is reset.
+
 ### Server startup and listening socket
 
 `RoboClashPhoneInputServer` uses TCP port `17862` and protocol version `1`. At scene load it finds or creates a persistent server component. When enabled, it starts a `TcpListener` bound to `IPAddress.Any`, then logs the selected local IPv4 address for the phone:
@@ -111,31 +117,28 @@ Source: [`RoboClashPhoneInputServer.cs`](./Assets/Scripts/RoboClash/RoboClashPho
 
 ### Meaning of the in-game connection indicator
 
-The HUD's connected state requires all of the following: the server has accepted the client, a valid input packet has been processed, and valid input has arrived within the last `0.75` seconds:
+The status counts phones that completed the handshake and sent valid input within the last `0.75` seconds. Duel requires the selected Player 1..N slots to be active:
 
 ```csharp
-public static bool IsPhoneActive =>
-    Active != null &&
-    Active.connected &&
-    Active.hasValidInput &&
-    Time.realtimeSinceStartup - Active.lastInputTime <= InputTimeoutSeconds;
+public static bool IsPhoneActive => Active != null && Active.ConnectedPhoneCount > 0;
 
 public static string StatusText => IsPhoneActive
-    ? "PHONE: CONNECTED"
+    ? $"PHONES: {Active.ConnectedPhoneCount}/{MaximumPhonePlayers} CONNECTED"
     : $"PHONE: WAITING  WIFI {BestLocalIPv4}:{Port}";
 ```
 
-Source: [`RoboClashPhoneInputServer.cs`](./Assets/Scripts/RoboClash/RoboClashPhoneInputServer.cs#L35) and [`RoboClashHUD.cs`](./Assets/Scripts/RoboClash/UI/RoboClashHUD.cs#L124).
+Source: [`RoboClashPhoneInputServer.cs`](./Assets/Scripts/RoboClash/RoboClashPhoneInputServer.cs#L158).
 
-Therefore, the HUD may continue to show `PHONE: WAITING` if the phone never sends input, even if it briefly opened a TCP socket. The server also times out idle clients after the same interval.
+The count can remain below the selected player count if a phone only opened a socket but did not send valid input. Idle clients time out after the same interval.
 
 ## Current Wi-Fi setup
 
-1. Connect the PC and phone to the same Wi-Fi network.
-2. Start RoboClash and enter Play Mode or run the standalone game. The game status and Unity Console show the PC address and port `17862`; the server listens on all interfaces.
-3. Open the controller APK, enter the displayed PC IPv4 address, and tap **CONNECT**. The app connects to TCP port `17862` and sends the protocol hello and input packets described above. The controller controls remain hidden until the game accepts the handshake.
-4. If the phone cannot connect, allow inbound TCP port `17862` through Windows Firewall on the active Private network profile, and check that the router does not isolate wireless clients. Do not use `127.0.0.1` on the phone; that address refers to the phone itself.
-5. Confirm the game reports `PHONE: CONNECTED` and test movement and buttons in a match.
+1. Connect the PC and all selected phones to the same Wi-Fi network.
+2. Start RoboClash and leave the game at its menu. The server shows the PC address and port `17862` and listens on all interfaces.
+3. Select Duel and choose 2 or 4 phone players; set the AI opponent count to 0 if you want human-only play.
+4. On each phone, enter the displayed PC IPv4 address and tap **CONNECT**. Connect in player order: first phone is Player 1, second is Player 2, etc.
+5. Wait until valid input is arriving from every selected phone. Each player then chooses a robot in their own panel; use Jump/Reload to browse and Ultimate to press Start. Duel launches only after all selected players are ready, and each robot gets its own split-screen view.
+6. If a phone cannot connect, allow inbound TCP port `17862` through Windows Firewall on the active Private network profile, and check that the router does not isolate wireless clients. Do not use `127.0.0.1` on the phone; that address refers to the phone itself.
 
 The controller currently uses direct IP entry rather than automatic same-Wi-Fi discovery. No phone-to-PC connection test has been performed yet.
 

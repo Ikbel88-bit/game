@@ -170,6 +170,7 @@ namespace RoboClash.UI
         private GameObject selectionScreen;
         private GameObject settingsScreen;
         private GameObject matchSetupScreen;
+        private GameObject duelLobbyScreen;
         private GameObject matchRulesPanel;
         private GameObject modeObjectivePanel;
         private GameObject multiplayerSetupPanel;
@@ -188,6 +189,7 @@ namespace RoboClash.UI
         private TextMeshProUGUI opponentCountText;
         private TextMeshProUGUI opponentCountLabel;
         private TextMeshProUGUI modeSettingsHint;
+        private TextMeshProUGUI duelPlayerCountLabel;
         private TextMeshProUGUI modeRuleLabel;
         private TextMeshProUGUI modeObjectiveText;
         private TextMeshProUGUI multiplayerObjectiveText;
@@ -206,10 +208,19 @@ namespace RoboClash.UI
         private TextMeshProUGUI[] gameModeCardLabels;
         private Button[] multiplayerPlayerCountButtons;
         private Image[] multiplayerPlayerCountBackgrounds;
+        private Button[] duelPlayerCountButtons;
+        private Image[] duelPlayerCountBackgrounds;
         private Button[] multiplayerKillTargetButtons;
         private Image[] multiplayerKillTargetBackgrounds;
         private TextMeshProUGUI[] multiplayerRobotLabels;
         private TextMeshProUGUI[] multiplayerPlayerLabels;
+        private TextMeshProUGUI[] duelLobbyPlayerLabels;
+        private TextMeshProUGUI[] duelLobbyRobotLabels;
+        private TextMeshProUGUI[] duelLobbyRoleLabels;
+        private Button[] duelLobbyPreviousButtons;
+        private Button[] duelLobbyNextButtons;
+        private Button[] duelLobbyReadyButtons;
+        private Image[] duelLobbyPanelBackgrounds;
         private Button[] multiplayerRobotPreviousButtons;
         private Button[] multiplayerRobotNextButtons;
         private RoboClashSettingsPanel settingsPanel;
@@ -253,7 +264,10 @@ namespace RoboClash.UI
         private RoboClashAIDifficulty aiDifficulty;
         private RoboClashGameMode gameMode;
         private int multiplayerPlayerCount;
+        private int duelPhonePlayerCount;
         private RoboClashRobotType[] multiplayerRobots;
+        private RoboClashRobotType[] duelRobots;
+        private readonly bool[] duelLobbyReady = new bool[4];
 
         private void Awake()
         {
@@ -273,7 +287,9 @@ namespace RoboClash.UI
             respawnsEnabled = RoboClashSession.RespawnsEnabled;
             duelUsesKillTarget = RoboClashSession.DuelUsesKillTarget;
             multiplayerPlayerCount = RoboClashSession.LocalPlayerCount;
+            duelPhonePlayerCount = RoboClashSession.DuelPhonePlayerCount;
             multiplayerRobots = RoboClashSession.MultiplayerRobots;
+            duelRobots = RoboClashSession.DuelRobots;
             EnsureEventSystem();
             RoboClashSaveService.ApplySettings();
             BuildInterface();
@@ -365,6 +381,12 @@ namespace RoboClash.UI
             if (previewRobot != null && (mainScreen.activeSelf || selectionScreen.activeSelf))
                 previewRobot.transform.Rotate(0f, 18f * Time.unscaledDeltaTime, 0f, Space.World);
 
+            if (duelLobbyScreen != null && duelLobbyScreen.activeSelf)
+            {
+                ProcessDuelLobbyPhoneInput();
+                UpdateDuelLobbyVisuals();
+            }
+
             if (Time.unscaledTime >= nextPhoneStatusRefresh)
             {
                 nextPhoneStatusRefresh = Time.unscaledTime + 0.5f;
@@ -391,6 +413,8 @@ namespace RoboClash.UI
             }
             else if (selectionScreen.activeSelf)
                 BackFromRobotGarage();
+            else if (duelLobbyScreen != null && duelLobbyScreen.activeSelf)
+                BackFromDuelLobby();
             else if (matchSummaryScreen.activeSelf)
                 OpenRobotGarageFromSummary();
             else if (matchSetupScreen.activeSelf || careerScreen.activeSelf)
@@ -437,6 +461,7 @@ namespace RoboClash.UI
             mainScreen = CreateScreen("Main Menu");
             selectionScreen = CreateScreen("Robot Selection");
             matchSetupScreen = CreateScreen("Match Setup");
+            duelLobbyScreen = CreateScreen("Duel Robot Selection");
             aiDifficultySelectionScreen = CreateScreen("AI Difficulty");
             matchSummaryScreen = CreateScreen("Match Summary");
             careerScreen = CreateScreen("Career Statistics");
@@ -444,6 +469,7 @@ namespace RoboClash.UI
             BuildMainScreen();
             BuildSelectionScreen();
             BuildMatchSetupScreen();
+            BuildDuelLobbyScreen();
             BuildDifficultySelectionScreen();
             BuildMatchSummaryScreen();
             BuildCareerScreen();
@@ -827,6 +853,22 @@ namespace RoboClash.UI
             modeSettingsHint = AddText(optionsPanel.transform, string.Empty, 11, BlueColor,
                 TextAnchor.MiddleCenter, new Vector2(0.02f, 0.41f), new Vector2(0.98f, 0.47f),
                 Vector2.zero, Vector2.zero);
+            duelPlayerCountLabel = AddText(optionsPanel.transform, "PHONE PLAYERS",
+                10, MutedColor, TextAnchor.MiddleLeft,
+                new Vector2(0.03f, 0.41f), new Vector2(0.34f, 0.47f),
+                Vector2.zero, Vector2.zero);
+            duelPlayerCountButtons = new Button[2];
+            duelPlayerCountBackgrounds = new Image[2];
+            for (var i = 0; i < duelPlayerCountButtons.Length; i++)
+            {
+                var count = i == 0 ? 2 : 4;
+                var left = i == 0 ? 0.38f : 0.68f;
+                var button = CreateButton(optionsPanel.transform, count.ToString(),
+                    new Vector2(left, 0.405f), new Vector2(left + 0.24f, 0.475f),
+                    PanelColor, () => SetDuelPlayerCount(count));
+                duelPlayerCountButtons[i] = button;
+                duelPlayerCountBackgrounds[i] = button.GetComponent<Image>();
+            }
             modeRuleLabel = AddText(optionsPanel.transform, "MODE RULES", 12, MutedColor,
                 TextAnchor.MiddleLeft, new Vector2(0.04f, 0.33f), new Vector2(0.96f, 0.40f),
                 Vector2.zero, Vector2.zero);
@@ -946,6 +988,69 @@ namespace RoboClash.UI
             UpdateMultiplayerSetup();
         }
 
+        private void BuildDuelLobbyScreen()
+        {
+            AddText(duelLobbyScreen.transform, "DUEL ROBOT SELECT", 34, BlueColor,
+                TextAnchor.MiddleCenter, new Vector2(0.06f, 0.91f), new Vector2(0.94f, 0.98f),
+                Vector2.zero, Vector2.zero);
+            AddText(duelLobbyScreen.transform,
+                "EACH PLAYER PICKS IN THEIR PANEL. ALL PLAYERS MUST PRESS START TO LAUNCH.",
+                14, MutedColor, TextAnchor.MiddleCenter,
+                new Vector2(0.06f, 0.85f), new Vector2(0.94f, 0.91f),
+                Vector2.zero, Vector2.zero);
+
+            duelLobbyPlayerLabels = new TextMeshProUGUI[4];
+            duelLobbyRobotLabels = new TextMeshProUGUI[4];
+            duelLobbyRoleLabels = new TextMeshProUGUI[4];
+            duelLobbyPreviousButtons = new Button[4];
+            duelLobbyNextButtons = new Button[4];
+            duelLobbyReadyButtons = new Button[4];
+            duelLobbyPanelBackgrounds = new Image[4];
+            for (var i = 0; i < 4; i++)
+            {
+                var playerIndex = i;
+                var panel = CreatePanel($"Duel Player {i + 1} Selection", duelLobbyScreen.transform, PanelColor);
+                duelLobbyPanelBackgrounds[i] = panel.GetComponent<Image>();
+                duelLobbyPlayerLabels[i] = AddText(panel.transform, string.Empty, 17, BlueColor,
+                    TextAnchor.MiddleCenter, new Vector2(0.04f, 0.80f), new Vector2(0.96f, 0.96f),
+                    Vector2.zero, Vector2.zero);
+                duelLobbyRobotLabels[i] = AddText(panel.transform, string.Empty, 28, Color.white,
+                    TextAnchor.MiddleCenter, new Vector2(0.04f, 0.53f), new Vector2(0.96f, 0.77f),
+                    Vector2.zero, Vector2.zero);
+                duelLobbyRoleLabels[i] = AddText(panel.transform, string.Empty, 13, MutedColor,
+                    TextAnchor.MiddleCenter, new Vector2(0.04f, 0.40f), new Vector2(0.96f, 0.53f),
+                    Vector2.zero, Vector2.zero);
+                duelLobbyPreviousButtons[i] = CreateButton(panel.transform, "< PREVIOUS",
+                    new Vector2(0.06f, 0.22f), new Vector2(0.44f, 0.36f),
+                    new Color(0.06f, 0.15f, 0.23f), () => CycleDuelRobot(playerIndex, -1));
+                duelLobbyNextButtons[i] = CreateButton(panel.transform, "NEXT >",
+                    new Vector2(0.56f, 0.22f), new Vector2(0.94f, 0.36f),
+                    new Color(0.06f, 0.15f, 0.23f), () => CycleDuelRobot(playerIndex, 1));
+                duelLobbyReadyButtons[i] = CreateButton(panel.transform, "START",
+                    new Vector2(0.25f, 0.04f), new Vector2(0.75f, 0.18f),
+                    OrangeColor, () => ToggleDuelPlayerReady(playerIndex), true);
+
+                var column = i % 2;
+                var row = i / 2;
+                var xMin = column == 0 ? 0.04f : 0.52f;
+                var xMax = column == 0 ? 0.48f : 0.96f;
+                var yMin = row == 0 ? 0.19f : 0.51f;
+                var yMax = row == 0 ? 0.49f : 0.81f;
+                Place(panel.GetComponent<RectTransform>(), new Vector2(xMin, yMin),
+                    new Vector2(xMax, yMax), Vector2.zero, Vector2.zero);
+            }
+
+            CreateButton(duelLobbyScreen.transform, "BACK",
+                new Vector2(0.04f, 0.06f), new Vector2(0.20f, 0.14f),
+                new Color(0.06f, 0.15f, 0.23f), BackFromDuelLobby);
+            AddText(duelLobbyScreen.transform,
+                "PHONE: JUMP = NEXT  |  RELOAD = PREVIOUS  |  ULTIMATE = START",
+                12, MutedColor, TextAnchor.MiddleCenter,
+                new Vector2(0.22f, 0.06f), new Vector2(0.96f, 0.14f),
+                Vector2.zero, Vector2.zero);
+            UpdateDuelLobbyVisuals();
+        }
+
         private void BuildDifficultySelectionScreen()
         {
             if (aiDifficultySelectionScreen == null)
@@ -1058,6 +1163,7 @@ namespace RoboClash.UI
             mainScreen.SetActive(true);
             selectionScreen.SetActive(false);
             matchSetupScreen.SetActive(false);
+            duelLobbyScreen.SetActive(false);
             if (aiDifficultySelectionScreen != null)
                 aiDifficultySelectionScreen.SetActive(false);
             matchSummaryScreen.SetActive(false);
@@ -1081,6 +1187,7 @@ namespace RoboClash.UI
             mainScreen.SetActive(false);
             selectionScreen.SetActive(false);
             matchSetupScreen.SetActive(true);
+            duelLobbyScreen.SetActive(false);
             if (aiDifficultySelectionScreen != null)
                 aiDifficultySelectionScreen.SetActive(false);
             matchSummaryScreen.SetActive(false);
@@ -1115,6 +1222,7 @@ namespace RoboClash.UI
             mainScreen.SetActive(false);
             selectionScreen.SetActive(true);
             matchSetupScreen.SetActive(false);
+            duelLobbyScreen.SetActive(false);
             if (aiDifficultySelectionScreen != null)
                 aiDifficultySelectionScreen.SetActive(false);
             matchSummaryScreen.SetActive(false);
@@ -1161,6 +1269,7 @@ namespace RoboClash.UI
             mainScreen.SetActive(false);
             selectionScreen.SetActive(false);
             matchSetupScreen.SetActive(false);
+            duelLobbyScreen.SetActive(false);
             if (aiDifficultySelectionScreen != null)
                 aiDifficultySelectionScreen.SetActive(false);
             matchSummaryScreen.SetActive(true);
@@ -1177,6 +1286,7 @@ namespace RoboClash.UI
             mainScreen.SetActive(false);
             selectionScreen.SetActive(false);
             matchSetupScreen.SetActive(false);
+            duelLobbyScreen.SetActive(false);
             if (aiDifficultySelectionScreen != null)
                 aiDifficultySelectionScreen.SetActive(false);
             matchSummaryScreen.SetActive(false);
@@ -1192,6 +1302,7 @@ namespace RoboClash.UI
             mainScreen.SetActive(false);
             selectionScreen.SetActive(false);
             matchSetupScreen.SetActive(false);
+            duelLobbyScreen.SetActive(false);
             if (aiDifficultySelectionScreen != null)
                 aiDifficultySelectionScreen.SetActive(false);
             matchSummaryScreen.SetActive(false);
@@ -1330,7 +1441,8 @@ namespace RoboClash.UI
 
             gameMode = GetGameModeFromOption(index);
             SetMultiplayerSetupVisible(gameMode == RoboClashGameMode.Multiplayer);
-            opponentCount = Mathf.Clamp(opponentCount, 1,
+            opponentCount = Mathf.Clamp(opponentCount,
+                gameMode == RoboClashGameMode.Duel ? 0 : 1,
                 gameMode == RoboClashGameMode.Survival ? 24 : 7);
             UpdateModeOptions();
             UpdateOpponentCountLabel();
@@ -1558,13 +1670,16 @@ namespace RoboClash.UI
         private void UpdateOpponentCountLabel()
         {
             if (opponentCountText != null)
-                opponentCountText.text = gameMode == RoboClashGameMode.Survival
+                opponentCountText.text = gameMode == RoboClashGameMode.Survival ||
+                                         gameMode == RoboClashGameMode.Duel
                     ? opponentCount.ToString()
                     : (opponentCount + 1).ToString();
             if (opponentCountLabel != null)
                 opponentCountLabel.text = gameMode == RoboClashGameMode.Survival
                     ? "STARTING ENEMIES"
-                    : "COMBATANTS (2-8)";
+                    : gameMode == RoboClashGameMode.Duel
+                        ? "AI OPPONENTS (0-7)"
+                        : "COMBATANTS (2-8)";
             if (gameMode != RoboClashGameMode.Multiplayer)
                 RoboClashSession.SaveSelection(RobotTypes[selectedRobotIndex], opponentCount);
             UpdateCurrentSelectionLabel();
@@ -1580,7 +1695,8 @@ namespace RoboClash.UI
 
         private void DecreaseOpponents()
         {
-            opponentCount = Mathf.Max(1, opponentCount - 1);
+            opponentCount = Mathf.Max(gameMode == RoboClashGameMode.Duel ? 0 : 1,
+                opponentCount - 1);
             UpdateOpponentCountLabel();
         }
 
@@ -1609,7 +1725,7 @@ namespace RoboClash.UI
             var knockout = gameMode == RoboClashGameMode.Knockout;
             var king = gameMode == RoboClashGameMode.KingOfTheArena;
             var countLimit = survival ? 24 : 7;
-            opponentCount = Mathf.Clamp(opponentCount, 1, countLimit);
+            opponentCount = Mathf.Clamp(opponentCount, duel ? 0 : 1, countLimit);
             decreaseOpponentButton.gameObject.SetActive(gameMode != RoboClashGameMode.Multiplayer);
             increaseOpponentButton.gameObject.SetActive(gameMode != RoboClashGameMode.Multiplayer);
             opponentCountLabel.gameObject.SetActive(true);
@@ -1617,9 +1733,15 @@ namespace RoboClash.UI
             survivalGrowthDropdown.gameObject.SetActive(survival);
             waveBreakDropdown.gameObject.SetActive(survival);
             modeSettingsHint.gameObject.SetActive(true);
+            modeSettingsHint.gameObject.SetActive(!duel);
             modeSettingsHint.text = survival
                 ? "WAVES GROW BY +" + survivalGrowth + " ENEMIES"
                 : "COMBATANTS: " + (opponentCount + 1);
+            duelPlayerCountLabel.gameObject.SetActive(duel);
+            foreach (var button in duelPlayerCountButtons)
+                button.gameObject.SetActive(duel);
+            if (duel)
+                UpdateDuelPlayerCountSelection();
             modeRuleDropdown.gameObject.SetActive(!survival);
             respawnDropdown.gameObject.SetActive(duel || king);
             var ruleOptions = new List<string>();
@@ -1671,6 +1793,180 @@ namespace RoboClash.UI
             multiplayerPlayerCount = Mathf.Clamp(count, 2, 4);
             PersistMultiplayerSetup();
             UpdateMultiplayerSetup();
+        }
+
+        private void SetDuelPlayerCount(int count)
+        {
+            duelPhonePlayerCount = count == 4 ? 4 : 2;
+            RoboClashSession.SaveDuelPhonePlayerCount(duelPhonePlayerCount);
+            UpdateDuelPlayerCountSelection();
+            RefreshObjectiveDisplays();
+        }
+
+        private void OpenDuelLobby()
+        {
+            Array.Clear(duelLobbyReady, 0, duelLobbyReady.Length);
+            mainScreen.SetActive(false);
+            selectionScreen.SetActive(false);
+            matchSetupScreen.SetActive(false);
+            if (aiDifficultySelectionScreen != null)
+                aiDifficultySelectionScreen.SetActive(false);
+            matchSummaryScreen.SetActive(false);
+            careerScreen.SetActive(false);
+            settingsScreen.SetActive(false);
+            duelLobbyScreen.SetActive(true);
+            SetRobotPreviewVisible(false);
+            UpdateDuelLobbyVisuals();
+            SelectFirstSelectable(duelLobbyScreen);
+        }
+
+        private void BackFromDuelLobby()
+        {
+            Array.Clear(duelLobbyReady, 0, duelLobbyReady.Length);
+            OpenMatchSummary();
+        }
+
+        private void CycleDuelRobot(int playerIndex, int direction)
+        {
+            if (playerIndex < 0 || playerIndex >= duelPhonePlayerCount ||
+                duelRobots == null || playerIndex >= duelRobots.Length)
+                return;
+
+            var server = RoboClashPhoneInputServer.Active;
+            if (server == null || !server.IsPhoneActiveForPlayer(playerIndex))
+                return;
+
+            var current = Array.IndexOf(RobotTypes, duelRobots[playerIndex]);
+            if (current < 0)
+                current = 0;
+            duelRobots[playerIndex] = RobotTypes[(current + direction + RobotTypes.Length) % RobotTypes.Length];
+            duelLobbyReady[playerIndex] = false;
+            RoboClashSession.SaveDuelRobotSelection(duelRobots);
+            UpdateDuelLobbyVisuals();
+        }
+
+        private void ToggleDuelPlayerReady(int playerIndex)
+        {
+            if (playerIndex < 0 || playerIndex >= duelPhonePlayerCount)
+                return;
+
+            var server = RoboClashPhoneInputServer.Active;
+            if (server == null || !server.IsPhoneActiveForPlayer(playerIndex))
+            {
+                ShowMatchStartError($"Player {playerIndex + 1}'s phone is not connected.");
+                return;
+            }
+
+            duelLobbyReady[playerIndex] = !duelLobbyReady[playerIndex];
+            UpdateDuelLobbyVisuals();
+            if (AreAllDuelPlayersReady())
+                StartSelectedMatch();
+        }
+
+        private void ProcessDuelLobbyPhoneInput()
+        {
+            var server = RoboClashPhoneInputServer.Active;
+            if (server == null)
+                return;
+
+            for (var i = 0; i < duelPhonePlayerCount; i++)
+            {
+                if (!server.IsPhoneActiveForPlayer(i))
+                    continue;
+
+                if (server.ConsumePressed(i, RoboClashPhoneAction.Jump))
+                    CycleDuelRobot(i, 1);
+                else if (server.ConsumePressed(i, RoboClashPhoneAction.Reload))
+                    CycleDuelRobot(i, -1);
+
+                if (server.ConsumePressed(i, RoboClashPhoneAction.Ultimate))
+                    ToggleDuelPlayerReady(i);
+            }
+        }
+
+        private bool AreAllDuelPlayersReady()
+        {
+            var server = RoboClashPhoneInputServer.Active;
+            if (server == null || !server.ArePlayersConnected(duelPhonePlayerCount))
+                return false;
+            for (var i = 0; i < duelPhonePlayerCount; i++)
+            {
+                if (!duelLobbyReady[i])
+                    return false;
+            }
+            return true;
+        }
+
+        private void UpdateDuelLobbyVisuals()
+        {
+            if (duelLobbyScreen == null || duelLobbyPlayerLabels == null)
+                return;
+
+            var server = RoboClashPhoneInputServer.Active;
+            for (var i = 0; i < duelLobbyPlayerLabels.Length; i++)
+            {
+                var active = i < duelPhonePlayerCount;
+                var playerIndex = i;
+                var rect = duelLobbyPanelBackgrounds[i].rectTransform;
+                if (duelPhonePlayerCount == 2)
+                {
+                    var left = i == 0 ? 0.04f : 0.52f;
+                    var right = i == 0 ? 0.48f : 0.96f;
+                    Place(rect, new Vector2(left, 0.18f), new Vector2(right, 0.82f),
+                        Vector2.zero, Vector2.zero);
+                }
+                else
+                {
+                    var column = i % 2;
+                    var row = i / 2;
+                    var left = column == 0 ? 0.04f : 0.52f;
+                    var right = column == 0 ? 0.48f : 0.96f;
+                    var bottom = row == 0 ? 0.19f : 0.51f;
+                    var top = row == 0 ? 0.49f : 0.81f;
+                    Place(rect, new Vector2(left, bottom), new Vector2(right, top),
+                        Vector2.zero, Vector2.zero);
+                }
+
+                duelLobbyPanelBackgrounds[i].gameObject.SetActive(active);
+                if (!active)
+                    continue;
+
+                var connected = server != null && server.IsPhoneActiveForPlayer(i);
+                if (!connected)
+                    duelLobbyReady[i] = false;
+                var type = duelRobots[i];
+                var typeIndex = Array.IndexOf(RobotTypes, type);
+                typeIndex = Mathf.Clamp(typeIndex, 0, roles.Length - 1);
+                duelLobbyPlayerLabels[i].text =
+                    $"PLAYER {i + 1}  //  {(connected ? "CONNECTED" : "WAITING FOR PHONE")}";
+                duelLobbyPlayerLabels[i].color = connected ? BlueColor : MutedColor;
+                duelLobbyRobotLabels[i].text = type.ToString().ToUpperInvariant();
+                duelLobbyRobotLabels[i].color = GetAccent(type, GetDefinition(type));
+                duelLobbyRoleLabels[i].text = roles[typeIndex];
+                duelLobbyPreviousButtons[i].interactable = connected && !duelLobbyReady[i];
+                duelLobbyNextButtons[i].interactable = connected && !duelLobbyReady[i];
+                duelLobbyReadyButtons[i].interactable = connected;
+                duelLobbyReadyButtons[i].GetComponentInChildren<TextMeshProUGUI>().text =
+                    duelLobbyReady[i] ? "READY - WAITING" : "START";
+                duelLobbyReadyButtons[i].GetComponent<Image>().color = duelLobbyReady[i]
+                    ? new Color(0.12f, 0.42f, 0.24f, 0.96f)
+                    : OrangeColor;
+                duelLobbyPanelBackgrounds[i].color = duelLobbyReady[i]
+                    ? new Color(0.08f, 0.21f, 0.19f, 0.96f)
+                    : PanelColor;
+            }
+        }
+
+        private void UpdateDuelPlayerCountSelection()
+        {
+            if (duelPlayerCountButtons == null)
+                return;
+            for (var i = 0; i < duelPlayerCountButtons.Length; i++)
+            {
+                var selected = (i == 0 ? 2 : 4) == duelPhonePlayerCount;
+                duelPlayerCountBackgrounds[i].color =
+                    selected ? new Color(OrangeColor.r, OrangeColor.g, OrangeColor.b, 0.35f) : PanelColor;
+            }
         }
 
         private void SetMultiplayerKillTarget(int option)
@@ -1811,6 +2107,10 @@ namespace RoboClash.UI
             return new RoboClashMatchSettings
             {
                 gameMode = mode,
+                aiOpponents = opponentCount,
+                localPlayerCount = mode == RoboClashGameMode.Duel
+                    ? duelPhonePlayerCount
+                    : multiplayerPlayerCount,
                 killTarget = GetKillTarget(),
                 knockoutLives = knockoutLives,
                 duelUsesKillTarget = duelUsesKillTarget,
@@ -1839,7 +2139,10 @@ namespace RoboClash.UI
             objectiveSettings.waveBreakSeconds = waveBreakSeconds;
             modeObjectiveText.text = "<b>OBJECTIVE:</b> " +
                                      RoboClashObjectives.Describe(objectiveSettings,
-                                         GetObjectiveTimeLimit(gameMode));
+                                         GetObjectiveTimeLimit(gameMode)) +
+                                     (gameMode == RoboClashGameMode.Duel
+                                         ? " Connect phones in order; first phone is Player 1."
+                                         : string.Empty);
         }
 
         private void RefreshObjectiveDisplays()
@@ -1930,17 +2233,50 @@ namespace RoboClash.UI
             if (startingMatch)
                 return;
 
-            if (selectedRobotIndex < 0 || selectedRobotIndex >= RobotTypes.Length ||
-                GetDefinition(RobotTypes[selectedRobotIndex])?.stats == null)
-            {
-                ShowMatchStartError("The selected robot prefab is missing its robot definition.");
-                return;
-            }
-
             if (!Enum.IsDefined(typeof(RoboClashGameMode), gameMode) ||
                 gameMode == RoboClashGameMode.FreeForAll)
             {
                 ShowMatchStartError("Select one of the supported match modes before starting.");
+                return;
+            }
+
+            if (gameMode == RoboClashGameMode.Duel &&
+                (RoboClashPhoneInputServer.Active == null ||
+                 !RoboClashPhoneInputServer.Active.ArePlayersConnected(duelPhonePlayerCount)))
+            {
+                var connected = RoboClashPhoneInputServer.Active != null
+                    ? RoboClashPhoneInputServer.Active.ConnectedPhoneCount
+                    : 0;
+                ShowMatchStartError(
+                    $"Connect all {duelPhonePlayerCount} phones first ({connected} currently connected).");
+                return;
+            }
+
+            if (gameMode == RoboClashGameMode.Duel)
+            {
+                if (!duelLobbyScreen.activeSelf)
+                {
+                    OpenDuelLobby();
+                    return;
+                }
+
+                if (!AreAllDuelPlayersReady())
+                    return;
+
+                for (var i = 0; i < duelPhonePlayerCount; i++)
+                {
+                    if (GetDefinition(duelRobots[i])?.stats == null)
+                    {
+                        ShowMatchStartError(
+                            $"Player {i + 1}'s selected robot prefab is missing its robot definition.");
+                        return;
+                    }
+                }
+            }
+            else if (selectedRobotIndex < 0 || selectedRobotIndex >= RobotTypes.Length ||
+                     GetDefinition(RobotTypes[selectedRobotIndex])?.stats == null)
+            {
+                ShowMatchStartError("The selected robot prefab is missing its robot definition.");
                 return;
             }
 
@@ -1960,7 +2296,14 @@ namespace RoboClash.UI
 
             try
             {
-                RoboClashSession.BeginMatch(RobotTypes[selectedRobotIndex], opponentCount, aiDifficulty,
+                var matchRobot = gameMode == RoboClashGameMode.Duel
+                    ? duelRobots[0]
+                    : RobotTypes[selectedRobotIndex];
+                if (gameMode == RoboClashGameMode.Duel)
+                {
+                    RoboClashSession.SaveDuelRobotSelection(duelRobots);
+                }
+                RoboClashSession.BeginMatch(matchRobot, opponentCount, aiDifficulty,
                     gameMode, survivalGrowth, waveBreakSeconds, matchTimerOption,
                     killTargetOption, knockoutLives, respawnsEnabled, duelUsesKillTarget);
                 canvas.gameObject.SetActive(false);

@@ -172,7 +172,8 @@ namespace RoboClash.UI
                     ? controller.GetComponent<RoboClashPlayerInputRouter>()
                     : null;
                 robotNameLabel.text = matchManager != null &&
-                                      matchManager.GameMode == RoboClashGameMode.Multiplayer
+                                      (matchManager.GameMode == RoboClashGameMode.Multiplayer ||
+                                       matchManager.GameMode == RoboClashGameMode.Duel)
                     ? $"PLAYER {(router != null ? router.PlayerIndex + 1 : 1)}  //  {name}"
                     : name;
                 robotNameLabel.color = definition != null
@@ -236,7 +237,9 @@ namespace RoboClash.UI
 
             BuildVitals();
             BuildAbilities();
-            if (matchManager == null || matchManager.GameMode != RoboClashGameMode.Multiplayer)
+            if (matchManager == null ||
+                (matchManager.GameMode != RoboClashGameMode.Multiplayer &&
+                 matchManager.GameMode != RoboClashGameMode.Duel))
             {
                 BuildMinimap();
                 BuildObjectivePanel();

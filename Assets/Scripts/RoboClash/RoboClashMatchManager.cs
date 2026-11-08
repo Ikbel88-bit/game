@@ -53,7 +53,7 @@ namespace RoboClash
         [Min(1f)] public float matchDurationSeconds = 180f;
         [Min(0f)] public float countdownDurationSeconds = 3f;
         public RoboClashGameMode gameMode = RoboClashGameMode.FreeForAll;
-        [Range(1, 7)] public int aiOpponents = 3;
+        [Range(0, 7)] public int aiOpponents = 3;
         public bool enableTimeLimit = true;
         [Range(1, 24)] public int startingSurvivalEnemies = 3;
         [Min(1)] public int additionalEnemiesPerWave = 1;
@@ -274,6 +274,9 @@ namespace RoboClash
             : RoboClashGameMode.TimedDeathmatch;
         public bool HasMatchTimer => settings != null && settings.enableTimeLimit && IsTimedMatch();
         public bool DuelUsesKillTarget => settings != null && settings.duelUsesKillTarget;
+        public int LocalPhonePlayerCount => settings != null
+            ? Mathf.Clamp(settings.localPlayerCount, 2, RoboClashPhoneInputServer.MaximumPhonePlayers)
+            : 2;
         public RoboClashAIDifficulty AIDifficulty => settings.aiDifficulty;
         public int CountdownValue => countdownValue;
         public RoboClashMatchStatistics Statistics => statistics;
@@ -312,9 +315,13 @@ namespace RoboClash
             ? 0
             : settings.gameMode == RoboClashGameMode.Survival
                 ? 1
-                : settings.gameMode == RoboClashGameMode.Multiplayer
-                    ? Mathf.Clamp(settings.localPlayerCount, 2, 4)
+                : UsesLocalPlayers
+                    ? Mathf.Clamp(settings.localPlayerCount, 2, 4) + GetInitialOpponentCount()
                     : GetInitialOpponentCount() + 1;
+
+        private bool UsesLocalPlayers => settings != null &&
+                                         (settings.gameMode == RoboClashGameMode.Multiplayer ||
+                                          settings.gameMode == RoboClashGameMode.Duel);
 
         public event Action<RoboClashMatchState> MatchStateChanged;
         public event Action<float> MatchTimerChanged;
@@ -336,8 +343,10 @@ namespace RoboClash
 
         public string GetPlayerObjectiveProgress()
         {
-            if (GameMode == RoboClashGameMode.Multiplayer)
+            if (UsesLocalPlayers)
             {
+                if (GameMode == RoboClashGameMode.Duel && !settings.duelUsesKillTarget)
+                    return GetMultiplayerScoreboardText();
                 var scores = new List<int>(participants.Count);
                 foreach (var participant in participants)
                 {
@@ -373,14 +382,18 @@ namespace RoboClash
 
         public string GetMultiplayerScoreboardText()
         {
-            if (GameMode != RoboClashGameMode.Multiplayer || settings == null)
+            if (!UsesLocalPlayers || settings == null)
                 return string.Empty;
 
             var count = Mathf.Clamp(settings.localPlayerCount, 2, 4);
             var rows = new List<string>(count);
             for (var index = 0; index < count; index++)
                 rows.Add($"P{index + 1} {GetPlayerKills(index)}");
-            return string.Join("  ", rows) + $" (first to {settings.killTarget})";
+            var suffix = settings.gameMode == RoboClashGameMode.Duel &&
+                         !settings.duelUsesKillTarget
+                ? " (timed)"
+                : $" (first to {settings.killTarget})";
+            return string.Join("  ", rows) + suffix;
         }
 
         private Participant FindParticipantByPlayerIndex(int playerIndex)
@@ -450,7 +463,8 @@ namespace RoboClash
             settings.countdownDurationSeconds = IsFinite(settings.countdownDurationSeconds)
                 ? Mathf.Max(0f, settings.countdownDurationSeconds)
                 : 3f;
-            settings.aiOpponents = Mathf.Clamp(settings.aiOpponents, 1, 7);
+            settings.aiOpponents = Mathf.Clamp(settings.aiOpponents,
+                settings.gameMode == RoboClashGameMode.Duel ? 0 : 1, 7);
             settings.maximumSurvivalEnemiesPerWave = Mathf.Clamp(settings.maximumSurvivalEnemiesPerWave, 1, 24);
             settings.startingSurvivalEnemies = Mathf.Clamp(settings.startingSurvivalEnemies, 1,
                 settings.maximumSurvivalEnemiesPerWave);
@@ -503,9 +517,13 @@ namespace RoboClash
             }
 
             settings.playerRobotType = selectedRobot;
-            settings.aiOpponents = Mathf.Clamp(opponents, 1, 7);
-            settings.localPlayerCount = RoboClashSession.LocalPlayerCount;
-            settings.multiplayerRobots = RoboClashSession.MultiplayerRobots;
+            settings.aiOpponents = Mathf.Clamp(opponents, 0, 7);
+            settings.localPlayerCount = gameMode == RoboClashGameMode.Duel
+                ? RoboClashSession.DuelPhonePlayerCount
+                : RoboClashSession.LocalPlayerCount;
+            settings.multiplayerRobots = gameMode == RoboClashGameMode.Duel
+                ? RoboClashSession.DuelRobots
+                : RoboClashSession.MultiplayerRobots;
             settings.startingSurvivalEnemies = Mathf.Clamp(opponents, 1,
                 settings.maximumSurvivalEnemiesPerWave);
             settings.matchDurationSeconds =
@@ -525,6 +543,15 @@ namespace RoboClash
             settings.duelRespawnsEnabled = allowRespawns;
 
             settings.enableTimeLimit = IsTimedMatch();
+            if (settings.gameMode == RoboClashGameMode.Duel &&
+                (RoboClashPhoneInputServer.Active == null ||
+                 !RoboClashPhoneInputServer.Active.ArePlayersConnected(settings.localPlayerCount)))
+            {
+                Debug.LogWarning(
+                    "A Duel phone stopped sending input during scene loading. Spawning all selected players; " +
+                    "the affected phone controls will remain unavailable until it reconnects.",
+                    this);
+            }
             InitializeMatch();
         }
 
@@ -734,14 +761,14 @@ namespace RoboClash
                 message = "Kill targets, Knockout lives, and timed mode durations must be valid finite values.";
                 return false;
             }
-            if (settings.gameMode == RoboClashGameMode.Multiplayer &&
+            if (UsesLocalPlayers &&
                 (settings.localPlayerCount < 2 || settings.localPlayerCount > 4 ||
                  settings.multiplayerRobots == null || settings.multiplayerRobots.Length != 4))
             {
-                message = "Local multiplayer requires 2-4 players and four robot selections.";
+                message = "Duel/local multiplayer requires 2-4 players and four robot selections.";
                 return false;
             }
-            if (settings.gameMode == RoboClashGameMode.Multiplayer)
+            if (UsesLocalPlayers)
             {
                 foreach (var type in settings.multiplayerRobots)
                 {
@@ -796,8 +823,13 @@ namespace RoboClash
             var ordered = new List<Participant>(participants);
             ordered.Sort((left, right) =>
             {
-                if (settings.gameMode == RoboClashGameMode.Multiplayer)
-                    return left.PlayerIndex.CompareTo(right.PlayerIndex);
+                if (UsesLocalPlayers)
+                {
+                    if (left.IsPlayer != right.IsPlayer)
+                        return left.IsPlayer ? -1 : 1;
+                    if (left.IsPlayer)
+                        return left.PlayerIndex.CompareTo(right.PlayerIndex);
+                }
                 var scoreComparison = settings.gameMode == RoboClashGameMode.KingOfTheArena
                     ? right.KingScore.CompareTo(left.KingScore)
                     : right.Kills.CompareTo(left.Kills);
@@ -811,7 +843,7 @@ namespace RoboClash
                     ? participant.Controller.GetComponent<RoboClashRobotDefinition>()
                     : null;
                 var name = definition != null ? definition.robotType.ToString().ToUpperInvariant() : participant.Id;
-                var line = settings.gameMode == RoboClashGameMode.Multiplayer
+                var line = UsesLocalPlayers && participant.IsPlayer
                     ? $"PLAYER {participant.PlayerIndex + 1}  {name}  {participant.Kills}K / {participant.Deaths}D"
                     : $"{(participant.IsPlayer ? "> " : string.Empty)}{name}  {participant.Kills}K / {participant.Deaths}D";
                 if (settings.gameMode == RoboClashGameMode.Knockout)
@@ -1036,7 +1068,7 @@ namespace RoboClash
             settings.gameMode = SanitizeGameMode(settings.gameMode);
             if (settings.gameMode == RoboClashGameMode.Knockout)
                 settings.matchDurationSeconds = KnockoutTimeLimitSeconds;
-            if (settings.gameMode == RoboClashGameMode.Multiplayer &&
+            if (UsesLocalPlayers &&
                 !hasOriginalShadowDistance)
             {
                 originalShadowDistance = QualitySettings.shadowDistance;
@@ -1062,7 +1094,7 @@ namespace RoboClash
                 return;
             }
 
-            if (settings.gameMode == RoboClashGameMode.Multiplayer)
+            if (UsesLocalPlayers)
                 QualitySettings.shadowDistance = Mathf.Min(originalShadowDistance, 35f);
 
             Debug.Log($"Initializing RoboClash {settings.gameMode} match.", this);
@@ -1110,6 +1142,8 @@ namespace RoboClash
                 SpawnParticipants(spawnPositions, opponentTypes);
                 var expectedParticipantCount = settings.gameMode == RoboClashGameMode.Multiplayer
                     ? settings.localPlayerCount
+                    : settings.gameMode == RoboClashGameMode.Duel
+                        ? settings.localPlayerCount + opponentCount
                     : opponentCount + 1;
                 if (participants.Count != expectedParticipantCount || player == null)
                 {
@@ -1119,7 +1153,7 @@ namespace RoboClash
                     return;
                 }
 
-                if (settings.gameMode == RoboClashGameMode.Multiplayer &&
+                if (UsesLocalPlayers &&
                     settings.localPlayerCount >= 2)
                     SetupMultiplayerPresentation();
 
@@ -1134,7 +1168,9 @@ namespace RoboClash
                 StatisticsChanged?.Invoke(statistics);
                 SetState(RoboClashMatchState.Ready);
                 Debug.Log(settings.gameMode == RoboClashGameMode.Multiplayer
-                    ? $"Spawned {participants.Count} local human players."
+                    ? $"Spawned {settings.localPlayerCount} local human players."
+                    : settings.gameMode == RoboClashGameMode.Duel
+                        ? $"Spawned {settings.localPlayerCount} phone players and {opponentCount} AI opponent(s)."
                     : $"Spawned the player and {opponentCount} AI opponent(s).", this);
                 countdownRoutine = StartCoroutine(RunCountdown());
             }
@@ -1190,7 +1226,7 @@ namespace RoboClash
         private void SpawnParticipants(Vector3[] spawnPositions, RoboClashRobotType[] opponentTypes)
         {
             var zones = FindSpawnZones();
-            if (settings.gameMode == RoboClashGameMode.Multiplayer)
+            if (UsesLocalPlayers)
             {
                 for (var i = 0; i < settings.localPlayerCount; i++)
                 {
@@ -1198,15 +1234,19 @@ namespace RoboClash
                     SpawnParticipant(type, spawnPositions[i],
                         FindNearestSpawnZone(zones, spawnPositions[i]), true, false, i);
                 }
-                return;
+                if (settings.gameMode == RoboClashGameMode.Multiplayer)
+                    return;
             }
 
-            SpawnParticipant(settings.playerRobotType, spawnPositions[0],
-                FindNearestSpawnZone(zones, spawnPositions[0]), true);
+            if (!UsesLocalPlayers)
+                SpawnParticipant(settings.playerRobotType, spawnPositions[0],
+                    FindNearestSpawnZone(zones, spawnPositions[0]), true);
+            var opponentOffset = UsesLocalPlayers ? settings.localPlayerCount : 1;
             for (var i = 0; i < opponentTypes.Length; i++)
             {
-                var zone = FindNearestSpawnZone(zones, spawnPositions[i + 1]);
-                var damageable = SpawnParticipant(opponentTypes[i], spawnPositions[i + 1], zone, false);
+                var zone = FindNearestSpawnZone(zones, spawnPositions[i + opponentOffset]);
+                var damageable = SpawnParticipant(opponentTypes[i],
+                    spawnPositions[i + opponentOffset], zone, false);
                 if (settings.gameMode == RoboClashGameMode.Survival && damageable != null)
                     currentWaveEnemies.Add(damageable);
             }
@@ -1312,7 +1352,7 @@ namespace RoboClash
             var robot = Instantiate(prefab, position, spawnRotation, participantRoot);
             var participantIndex = participants.Count;
             robot.name = isPlayer
-                ? settings.gameMode == RoboClashGameMode.Multiplayer
+                ? UsesLocalPlayers
                     ? $"Player {playerIndex + 1} {type.ToString().ToUpperInvariant()}"
                     : $"Player {type.ToString().ToUpperInvariant()}" :
                 $"AI Wave {Mathf.Max(1, currentWave)} {participantIndex} {type.ToString().ToUpperInvariant()}";
@@ -1331,7 +1371,10 @@ namespace RoboClash
             inputRouter.Source = isPlayer
                 ? settings.gameMode == RoboClashGameMode.Multiplayer
                     ? RoboClashInputAssignment.For(playerIndex, settings.localPlayerCount)
-                    : new KeyboardMouseInputSource()
+                    : settings.gameMode == RoboClashGameMode.Duel
+                        ? new KeyboardMouseInputSource(playerIndex: playerIndex,
+                            allowKeyboard: playerIndex == 0)
+                        : new KeyboardMouseInputSource()
                 : null;
             damageable.GrantSpawnProtection(2f);
 
@@ -1365,7 +1408,7 @@ namespace RoboClash
                     break;
             }
             var participantCamera = isPlayer
-                ? settings.gameMode == RoboClashGameMode.Multiplayer
+                ? UsesLocalPlayers
                     ? CreateLocalPlayerCamera(robot, playerIndex)
                     : playerCamera
                 : null;
@@ -1403,13 +1446,13 @@ namespace RoboClash
             damageable.Eliminated += OnParticipantEliminated;
             controller.Respawned += OnParticipantRespawned;
 
-            if (isPlayer && (settings.gameMode != RoboClashGameMode.Multiplayer || playerIndex == 0))
+            if (isPlayer && (!UsesLocalPlayers || playerIndex == 0))
             {
                 player = controller;
                 PlayerRegistered?.Invoke(controller);
             }
 
-            Debug.Log(settings.gameMode == RoboClashGameMode.Multiplayer
+            Debug.Log(UsesLocalPlayers
                     ? $"Spawned player {playerIndex + 1} ({type}) at {robot.transform.position}."
                     : $"Spawned {(isPlayer ? "player" : "AI opponent")} {type} at {robot.transform.position}.",
                 robot);
@@ -1589,6 +1632,8 @@ namespace RoboClash
                     EndMatch(RoboClashMatchState.Victory);
                     return;
                 }
+                if (settings.gameMode == RoboClashGameMode.Duel && creditedKiller.IsPlayer)
+                    WinnerPlayerIndex = creditedKiller.PlayerIndex;
                 EndMatch(creditedKiller.IsPlayer
                     ? RoboClashMatchState.Victory
                     : RoboClashMatchState.Defeat);
@@ -1641,10 +1686,17 @@ namespace RoboClash
                 if (State == RoboClashMatchState.Playing && settings.gameMode == RoboClashGameMode.Duel &&
                     !settings.duelRespawnsEnabled)
                 {
-                    if (CountAliveCombatants() == 0)
+                    var alive = GetOnlyAliveParticipant();
+                    if (alive == null && CountAliveCombatants() == 0)
                         EndMatch(RoboClashMatchState.Draw);
-                    else if (CountAliveCombatants() == 1)
-                        EndMatch(IsPlayerAlive() ? RoboClashMatchState.Victory : RoboClashMatchState.Defeat);
+                    else if (alive != null)
+                    {
+                        if (alive.IsPlayer)
+                            WinnerPlayerIndex = alive.PlayerIndex;
+                        EndMatch(alive.IsPlayer
+                            ? RoboClashMatchState.Victory
+                            : RoboClashMatchState.Defeat);
+                    }
                 }
                 return;
             }
@@ -1655,6 +1707,23 @@ namespace RoboClash
                     EndMatch(RoboClashMatchState.Defeat);
                 else if (CountLivingWaveEnemies() == 0 && !waveBreakActive)
                     StartWaveBreak();
+                return;
+            }
+
+            if (settings.gameMode == RoboClashGameMode.Duel &&
+                !settings.duelRespawnsEnabled)
+            {
+                var alive = GetOnlyAliveParticipant();
+                if (alive == null && CountAliveCombatants() == 0)
+                    EndMatch(RoboClashMatchState.Draw);
+                else if (alive != null)
+                {
+                    if (alive.IsPlayer)
+                        WinnerPlayerIndex = alive.PlayerIndex;
+                    EndMatch(alive.IsPlayer
+                        ? RoboClashMatchState.Victory
+                        : RoboClashMatchState.Defeat);
+                }
                 return;
             }
 
@@ -1715,7 +1784,11 @@ namespace RoboClash
             }
 
             if (winner != null)
+            {
+                if (winner.IsPlayer)
+                    WinnerPlayerIndex = winner.PlayerIndex;
                 EndMatch(winner.IsPlayer ? RoboClashMatchState.Victory : RoboClashMatchState.Defeat);
+            }
         }
 
         private void StartWaveBreak()
@@ -1857,6 +1930,8 @@ namespace RoboClash
             {
                 case RoboClashGameMode.Multiplayer:
                     return 0;
+                case RoboClashGameMode.Duel:
+                    return Mathf.Clamp(settings.aiOpponents, 0, 7);
                 case RoboClashGameMode.Survival:
                     return Mathf.Clamp(settings.startingSurvivalEnemies, 1,
                         settings.maximumSurvivalEnemiesPerWave);
@@ -2114,9 +2189,13 @@ namespace RoboClash
                     ? RoboClashMatchState.Draw
                     : RoboClashMatchState.Defeat);
             else
+            {
+                if (leaders[0].IsPlayer)
+                    WinnerPlayerIndex = leaders[0].PlayerIndex;
                 EndMatch(leaders[0].IsPlayer
                     ? RoboClashMatchState.Victory
                     : RoboClashMatchState.Defeat);
+            }
         }
 
         private void EndMatch(RoboClashMatchState result)
@@ -2145,7 +2224,7 @@ namespace RoboClash
                 : settings.matchDurationSeconds - remainingTime;
             statistics.Complete(matchDuration, result);
             statistics.SetPlayerPlacement(GetPlayerPlacement(result));
-            if (settings.gameMode != RoboClashGameMode.Multiplayer)
+            if (!UsesLocalPlayers)
                 RoboClashSaveService.RecordMatch(statistics, settings.playerRobotType, progressionRewards);
             SetState(result);
             StopWaveRoutine();
@@ -2289,7 +2368,7 @@ namespace RoboClash
             foreach (var participant in participants)
             {
                 if ((!participant.IsPlayer ||
-                     (settings.gameMode == RoboClashGameMode.Multiplayer && participant.PlayerIndex > 0)) &&
+                     (UsesLocalPlayers && participant.PlayerIndex > 0)) &&
                     IsAlive(participant))
                     count++;
             }
@@ -2309,13 +2388,27 @@ namespace RoboClash
             return count;
         }
 
+        private Participant GetOnlyAliveParticipant()
+        {
+            Participant aliveParticipant = null;
+            foreach (var participant in participants)
+            {
+                if (!IsAlive(participant))
+                    continue;
+                if (aliveParticipant != null)
+                    return null;
+                aliveParticipant = participant;
+            }
+            return aliveParticipant;
+        }
+
         private int CountLivingOpponents()
         {
             var count = 0;
             foreach (var participant in participants)
             {
                 if ((!participant.IsPlayer ||
-                     (settings.gameMode == RoboClashGameMode.Multiplayer && participant.PlayerIndex > 0)) &&
+                     (UsesLocalPlayers && participant.PlayerIndex > 0)) &&
                     IsLiving(participant))
                     count++;
             }
@@ -2630,13 +2723,18 @@ namespace RoboClash
 
         private Vector3[] GetSpawnPositions(RoboClashRobotType[] opponentTypes)
         {
+            var usesLocalPlayers = UsesLocalPlayers;
             var isMultiplayer = settings.gameMode == RoboClashGameMode.Multiplayer;
-            var count = isMultiplayer ? settings.localPlayerCount : opponentTypes.Length + 1;
+            var count = usesLocalPlayers
+                ? settings.localPlayerCount + (isMultiplayer ? 0 : opponentTypes.Length)
+                : opponentTypes.Length + 1;
             var positions = new Vector3[count];
-            var types = isMultiplayer
-                ? new List<RoboClashRobotType>(opponentTypes)
+            var types = usesLocalPlayers
+                ? new List<RoboClashRobotType>(GetMultiplayerRobotTypes())
                 : new List<RoboClashRobotType> { settings.playerRobotType };
-            if (!isMultiplayer)
+            if (usesLocalPlayers && !isMultiplayer)
+                types.AddRange(opponentTypes);
+            else if (!usesLocalPlayers)
                 types.AddRange(opponentTypes);
             var safeCandidates = new List<Vector3>(spawnCandidates.Count);
             foreach (var candidate in spawnCandidates)

@@ -55,6 +55,7 @@ namespace RoboClash
     public sealed class RoboClashPhoneInputServer : MonoBehaviour
     {
         public const int Port = 17862;
+        public const int MaximumPhonePlayers = 4;
         private const int ProtocolVersion = 1;
         private const int MaximumLineLength = 512;
         private const int MaximumQueuedMessages = 64;
@@ -101,70 +102,120 @@ namespace RoboClash
         private struct PendingMessage
         {
             public string Line;
+            public int PlayerIndex;
             public int Generation;
             public TaskCompletionSource<string> Completion;
+        }
+
+        private sealed class PhoneState
+        {
+            public readonly object AimDeltaLock = new object();
+            public TcpClient Client;
+            public Thread ClientThread;
+            public volatile bool Connected;
+            public volatile bool HasValidInput;
+            public volatile float LastInputTime;
+            public int Generation;
+            public RoboClashPhoneInput CurrentInput;
+            public bool ReportedPhoneActive;
+            public bool LastJump;
+            public bool LastReload;
+            public bool LastAbility;
+            public bool LastUltimate;
+            public bool JumpPressed;
+            public bool ReloadPressed;
+            public bool AbilityPressed;
+            public bool UltimatePressed;
+            public float AccumulatedGyroYawDelta;
+            public float AccumulatedGyroPitchDelta;
+            public float LastGyroAimDeltaTime;
+            public bool HasReceivedGyroAimDeltas;
+            public bool HasSensorReference;
+            public bool HasCompassReference;
+            public float AccelerometerPitchOffset;
+            public float CompassHeadingReference;
+            public float CompassYawReference;
+            public float FusedYaw;
+            public float FusedPitch;
+            public float LastFusionSampleTime;
+            public bool RecenterPressed;
+            public int InvalidPacketWarningGeneration = -1;
         }
 
         private readonly Queue<PendingMessage> pendingMessages = new Queue<PendingMessage>();
         private readonly object messageLock = new object();
         private readonly object clientLock = new object();
-        private readonly object aimDeltaLock = new object();
+        private readonly PhoneState[] phoneStates =
+        {
+            new PhoneState(), new PhoneState(), new PhoneState(), new PhoneState()
+        };
         private TcpListener listener;
-        private TcpClient client;
         private Thread listenerThread;
-        private Thread clientThread;
         private volatile bool stopping;
-        private volatile bool connected;
         private string pendingNetworkWarning;
-        private bool lastJump;
-        private bool lastReload;
-        private bool lastAbility;
-        private bool lastUltimate;
-        private bool jumpPressed;
-        private bool reloadPressed;
-        private bool abilityPressed;
-        private bool ultimatePressed;
-        private volatile float lastInputTime;
-        private volatile bool hasValidInput;
-        private bool reportedPhoneActive;
-        private volatile int clientGeneration;
-        private float accumulatedGyroYawDelta;
-        private float accumulatedGyroPitchDelta;
-        private float lastGyroAimDeltaTime;
-        private bool hasReceivedGyroAimDeltas;
-        private bool hasSensorReference;
-        private bool hasCompassReference;
-        private float accelerometerPitchOffset;
-        private float compassHeadingReference;
-        private float compassYawReference;
-        private float fusedYaw;
-        private float fusedPitch;
-        private float lastFusionSampleTime;
-        private bool recenterPressed;
-        private int invalidPacketWarningGeneration = -1;
 
         public static RoboClashPhoneInputServer Active { get; private set; }
         public static bool IsPhoneConnected => IsPhoneActive;
-        public static bool IsPhoneActive =>
-            Active != null &&
-            Active.connected &&
-            Active.hasValidInput &&
-            Time.realtimeSinceStartup - Active.lastInputTime <= InputTimeoutSeconds;
+        public static bool IsPhoneActive => Active != null && Active.ConnectedPhoneCount > 0;
         public static string StatusText => IsPhoneActive
-            ? "PHONE: CONNECTED"
+            ? $"PHONES: {Active.ConnectedPhoneCount}/{MaximumPhonePlayers} CONNECTED"
             : $"PHONE: WAITING  WIFI {BestLocalIPv4}:{Port}";
         public static string BestLocalIPv4 => GetBestLocalIPv4();
 
-        public bool IsConnected => connected;
-        public RoboClashPhoneInput CurrentInput { get; private set; }
-        public bool HasRecentGyroAimDeltas
+        public bool IsConnected => ConnectedPhoneCount > 0;
+        public int ConnectedPhoneCount
         {
             get
             {
-                lock (aimDeltaLock)
-                    return hasReceivedGyroAimDeltas &&
-                           Time.realtimeSinceStartup - lastGyroAimDeltaTime <= GyroAimDeltaRecentSeconds;
+                var count = 0;
+                for (var i = 0; i < phoneStates.Length; i++)
+                {
+                    if (IsPhoneActiveForPlayer(i))
+                        count++;
+                }
+                return count;
             }
+        }
+        public RoboClashPhoneInput CurrentInput => GetCurrentInput(0);
+        public bool HasRecentGyroAimDeltas => HasRecentGyroAimDeltasForPlayer(0);
+
+        public bool IsPhoneActiveForPlayer(int playerIndex)
+        {
+            if (playerIndex < 0 || playerIndex >= phoneStates.Length)
+                return false;
+            var state = phoneStates[playerIndex];
+            return state.Connected && state.HasValidInput &&
+                   Time.realtimeSinceStartup - state.LastInputTime <= InputTimeoutSeconds;
+        }
+
+        public bool ArePlayersConnected(int playerCount)
+        {
+            if (playerCount < 1 || playerCount > phoneStates.Length)
+                return false;
+            for (var i = 0; i < playerCount; i++)
+            {
+                if (!IsPhoneActiveForPlayer(i))
+                    return false;
+            }
+            return true;
+        }
+
+        public RoboClashPhoneInput GetCurrentInput(int playerIndex)
+        {
+            return playerIndex >= 0 && playerIndex < phoneStates.Length &&
+                   IsPhoneActiveForPlayer(playerIndex)
+                ? phoneStates[playerIndex].CurrentInput
+                : default;
+        }
+
+        public bool HasRecentGyroAimDeltasForPlayer(int playerIndex)
+        {
+            if (playerIndex < 0 || playerIndex >= phoneStates.Length)
+                return false;
+            var state = phoneStates[playerIndex];
+            lock (state.AimDeltaLock)
+                return state.HasReceivedGyroAimDeltas &&
+                       Time.realtimeSinceStartup - state.LastGyroAimDeltaTime <= GyroAimDeltaRecentSeconds;
         }
         public string LocalAddress => GetBestLocalIPv4();
 
@@ -228,19 +279,20 @@ namespace RoboClash
 
             while (TryDequeueMessage(out var pendingMessage))
             {
-                if (pendingMessage.Generation != clientGeneration || !connected)
+                var state = phoneStates[pendingMessage.PlayerIndex];
+                if (pendingMessage.Generation != state.Generation || !state.Connected)
                 {
                     pendingMessage.Completion.TrySetResult("connection changed while processing packet");
                     continue;
                 }
 
-                if (!TryApplyMessage(pendingMessage.Line, out var rejectionReason))
+                if (!TryApplyMessage(pendingMessage.Line, state, out var rejectionReason))
                 {
-                    if (invalidPacketWarningGeneration != pendingMessage.Generation)
+                    if (state.InvalidPacketWarningGeneration != pendingMessage.Generation)
                     {
-                        invalidPacketWarningGeneration = pendingMessage.Generation;
+                        state.InvalidPacketWarningGeneration = pendingMessage.Generation;
                         Debug.LogWarning(
-                            $"RoboClash phone controller sent an invalid input packet: {rejectionReason}. " +
+                            $"Phone {pendingMessage.PlayerIndex + 1} sent an invalid input packet: {rejectionReason}. " +
                             $"Packet length: {pendingMessage.Line.Length}.",
                             this);
                     }
@@ -248,52 +300,65 @@ namespace RoboClash
                     continue;
                 }
 
-                invalidPacketWarningGeneration = -1;
-                lastInputTime = Time.realtimeSinceStartup;
-                hasValidInput = true;
+                state.InvalidPacketWarningGeneration = -1;
+                state.LastInputTime = Time.realtimeSinceStartup;
+                state.HasValidInput = true;
                 pendingMessage.Completion.TrySetResult(null);
             }
 
-            if (CurrentInput.Guard &&
-                Time.realtimeSinceStartup - lastInputTime > GuardInputTimeoutSeconds)
+            for (var i = 0; i < phoneStates.Length; i++)
             {
-                var input = CurrentInput;
-                input.Guard = false;
-                CurrentInput = input;
-            }
+                var state = phoneStates[i];
+                if (state.CurrentInput.Guard &&
+                    Time.realtimeSinceStartup - state.LastInputTime > GuardInputTimeoutSeconds)
+                {
+                    var input = state.CurrentInput;
+                    input.Guard = false;
+                    state.CurrentInput = input;
+                }
 
-            if (connected && hasValidInput &&
-                Time.realtimeSinceStartup - lastInputTime > InputTimeoutSeconds)
-            {
-                Debug.LogWarning("RoboClash phone controller timed out; PC controls are active.", this);
-                CloseClient();
-            }
+                if (state.Connected && state.HasValidInput &&
+                    Time.realtimeSinceStartup - state.LastInputTime > InputTimeoutSeconds)
+                {
+                    Debug.LogWarning(
+                        $"Phone {i + 1} controller timed out; its PC/gamepad fallback is active.", this);
+                    CloseClient(i);
+                }
 
-            if (!IsPhoneActive)
-                ResetInput();
+                if (!IsPhoneActiveForPlayer(i))
+                    ResetInput(state);
 
-            var phoneActive = IsPhoneActive;
-            if (reportedPhoneActive != phoneActive)
-            {
-                reportedPhoneActive = phoneActive;
-                Debug.Log(phoneActive
-                    ? "RoboClash phone controller connected; phone controls are active."
-                    : "RoboClash phone controller disconnected; PC controls are active.", this);
+                var phoneActive = IsPhoneActiveForPlayer(i);
+                if (state.ReportedPhoneActive != phoneActive)
+                {
+                    state.ReportedPhoneActive = phoneActive;
+                    Debug.Log(phoneActive
+                        ? $"Phone {i + 1} controller connected; its phone controls are active."
+                        : $"Phone {i + 1} controller disconnected; its fallback controls are active.", this);
+                }
             }
         }
 
         public bool ConsumePressed(RoboClashPhoneAction action)
         {
+            return ConsumePressed(0, action);
+        }
+
+        public bool ConsumePressed(int playerIndex, RoboClashPhoneAction action)
+        {
+            if (playerIndex < 0 || playerIndex >= phoneStates.Length)
+                return false;
+            var state = phoneStates[playerIndex];
             switch (action)
             {
                 case RoboClashPhoneAction.Jump:
-                    return Consume(ref jumpPressed);
+                    return Consume(ref state.JumpPressed);
                 case RoboClashPhoneAction.Reload:
-                    return Consume(ref reloadPressed);
+                    return Consume(ref state.ReloadPressed);
                 case RoboClashPhoneAction.Ability:
-                    return Consume(ref abilityPressed);
+                    return Consume(ref state.AbilityPressed);
                 case RoboClashPhoneAction.Ultimate:
-                    return Consume(ref ultimatePressed);
+                    return Consume(ref state.UltimatePressed);
                 default:
                     return false;
             }
@@ -301,15 +366,29 @@ namespace RoboClash
 
         public bool ConsumeRecenterPressed()
         {
-            return Consume(ref recenterPressed);
+            return ConsumeRecenterPressed(0);
+        }
+
+        public bool ConsumeRecenterPressed(int playerIndex)
+        {
+            return playerIndex >= 0 && playerIndex < phoneStates.Length &&
+                   Consume(ref phoneStates[playerIndex].RecenterPressed);
         }
 
         public void RecenterAim()
         {
-            var input = CurrentInput;
-            lock (aimDeltaLock)
+            RecenterAim(0);
+        }
+
+        public void RecenterAim(int playerIndex)
+        {
+            if (playerIndex < 0 || playerIndex >= phoneStates.Length)
+                return;
+            var state = phoneStates[playerIndex];
+            var input = GetCurrentInput(playerIndex);
+            lock (state.AimDeltaLock)
             {
-                SetSensorReference(input.AccelerometerValid, input.AccelerometerX,
+                SetSensorReference(state, input.AccelerometerValid, input.AccelerometerX,
                     input.AccelerometerY, input.AccelerometerZ,
                     input.CompassValid, input.CompassHeading);
             }
@@ -357,42 +436,64 @@ namespace RoboClash
                         return;
                     acceptedClient = activeListener.AcceptTcpClient();
                     acceptedClient.NoDelay = true;
-                    TcpClient previousClient;
-                    Thread previousThread;
+                    var playerIndex = -1;
                     int generation;
                     lock (clientLock)
                     {
-                        previousClient = client;
-                        previousThread = clientThread;
-                        generation = ++clientGeneration;
-                        client = acceptedClient;
-                        clientThread = null;
-                        connected = false;
-                        hasValidInput = false;
-                        ResetAimDelta();
+                        for (var i = 0; i < phoneStates.Length; i++)
+                        {
+                            if (phoneStates[i].Client != null)
+                                continue;
+                            playerIndex = i;
+                            break;
+                        }
+
+                        if (playerIndex >= 0)
+                        {
+                            var state = phoneStates[playerIndex];
+                            generation = ++state.Generation;
+                            state.Client = acceptedClient;
+                            state.ClientThread = null;
+                            state.Connected = false;
+                            state.HasValidInput = false;
+                            ResetAimDelta(state);
+                        }
+                        else
+                        {
+                            generation = -1;
+                        }
                     }
 
-                    previousClient?.Close();
-                    ClearPendingMessages();
-                    if (previousThread != null && previousThread.IsAlive &&
-                        Thread.CurrentThread != previousThread && !previousThread.Join(500))
-                        Debug.LogWarning("Previous phone controller connection did not stop within 500 ms.", this);
+                    if (playerIndex < 0)
+                    {
+                        SetNetworkWarning(
+                            $"The phone controller limit of {MaximumPhonePlayers} connected devices was reached.");
+                        acceptedClient.Close();
+                        acceptedClient = null;
+                        continue;
+                    }
 
-                    var connectionThread = new Thread(() => HandleController(acceptedClient, generation))
+                    ClearPendingMessages(playerIndex);
+                    var assignedPlayerIndex = playerIndex;
+                    var clientForThread = acceptedClient;
+                    var connectionThread = new Thread(() =>
+                        HandleController(clientForThread, assignedPlayerIndex, generation))
                     {
                         IsBackground = true,
-                        Name = "RoboClash Phone Controller Client"
+                        Name = $"RoboClash Phone Controller {playerIndex + 1}"
                     };
                     lock (clientLock)
                     {
-                        if (generation != clientGeneration || stopping)
+                        var state = phoneStates[playerIndex];
+                        if (generation != state.Generation || state.Client != clientForThread || stopping)
                         {
-                            acceptedClient.Close();
+                            clientForThread.Close();
                             continue;
                         }
-                        clientThread = connectionThread;
+                        state.ClientThread = connectionThread;
                     }
                     connectionThread.Start();
+                    acceptedClient = null;
                 }
                 catch (ObjectDisposedException)
                 {
@@ -406,13 +507,13 @@ namespace RoboClash
                 }
                 finally
                 {
-                    if (acceptedClient != null && !IsCurrentClient(acceptedClient, clientGeneration))
+                    if (acceptedClient != null)
                         acceptedClient.Close();
                 }
             }
         }
 
-        private void HandleController(TcpClient acceptedClient, int generation)
+        private void HandleController(TcpClient acceptedClient, int playerIndex, int generation)
         {
             try
             {
@@ -420,24 +521,28 @@ namespace RoboClash
                 {
                     var hello = ReadLine(stream);
                     if (!string.Equals(hello, HelloMessage, StringComparison.Ordinal) ||
-                        !IsCurrentClient(acceptedClient, generation))
+                        !IsCurrentClient(acceptedClient, playerIndex, generation))
                         return;
 
                     WriteLine(stream, WelcomeMessage);
                     lock (clientLock)
                     {
-                        if (stopping || client != acceptedClient || clientGeneration != generation)
+                        var state = phoneStates[playerIndex];
+                        if (stopping || state.Client != acceptedClient || state.Generation != generation)
                             return;
-                        connected = true;
+                        state.Connected = true;
                     }
+                    Debug.Log(
+                        $"Phone Player {playerIndex + 1} connected from {acceptedClient.Client.RemoteEndPoint}.",
+                        this);
 
-                    while (!stopping && IsCurrentClient(acceptedClient, generation))
+                    while (!stopping && IsCurrentClient(acceptedClient, playerIndex, generation))
                     {
                         var line = ReadLine(stream);
                         if (line == null || line.Length == 0)
                             break;
 
-                        var completion = EnqueueMessage(line, generation);
+                        var completion = EnqueueMessage(line, playerIndex, generation);
                         if (!completion.Task.Wait(TimeSpan.FromSeconds(5)))
                         {
                             SetNetworkWarning(
@@ -458,47 +563,51 @@ namespace RoboClash
             }
             catch (ObjectDisposedException)
             {
-                if (!stopping && IsCurrentClient(acceptedClient, generation))
-                    SetNetworkWarning("The phone controller socket closed unexpectedly.");
+                if (!stopping && IsCurrentClient(acceptedClient, playerIndex, generation))
+                    SetNetworkWarning($"Phone {playerIndex + 1} socket closed unexpectedly.");
             }
             catch (SocketException)
             {
-                if (!stopping && IsCurrentClient(acceptedClient, generation))
-                    SetNetworkWarning("The phone controller network connection ended.");
+                if (!stopping && IsCurrentClient(acceptedClient, playerIndex, generation))
+                    SetNetworkWarning($"Phone {playerIndex + 1} network connection ended.");
             }
             catch (System.IO.IOException)
             {
-                if (!stopping && IsCurrentClient(acceptedClient, generation))
-                    SetNetworkWarning("The phone controller stream closed.");
+                if (!stopping && IsCurrentClient(acceptedClient, playerIndex, generation))
+                    SetNetworkWarning($"Phone {playerIndex + 1} stream closed.");
             }
             finally
             {
                 var disconnectedCurrentClient = false;
                 lock (clientLock)
                 {
-                    if (client == acceptedClient && generation == clientGeneration)
+                    var state = phoneStates[playerIndex];
+                    if (state.Client == acceptedClient && generation == state.Generation)
                     {
-                        client = null;
-                        clientThread = null;
-                        connected = false;
-                        hasValidInput = false;
-                        ClearPendingMessages();
+                        state.Client = null;
+                        state.ClientThread = null;
+                        state.Connected = false;
+                        state.HasValidInput = false;
                         disconnectedCurrentClient = true;
                     }
                 }
                 if (disconnectedCurrentClient)
-                    ResetAimDelta();
+                {
+                    ClearPendingMessages(playerIndex);
+                    ResetInput(phoneStates[playerIndex]);
+                }
                 acceptedClient.Close();
             }
         }
 
-        private bool IsCurrentClient(TcpClient candidate, int generation)
+        private bool IsCurrentClient(TcpClient candidate, int playerIndex, int generation)
         {
             lock (clientLock)
-                return !stopping && client == candidate && clientGeneration == generation;
+                return !stopping && phoneStates[playerIndex].Client == candidate &&
+                       phoneStates[playerIndex].Generation == generation;
         }
 
-        private bool TryApplyMessage(string line, out string rejectionReason)
+        private bool TryApplyMessage(string line, PhoneState state, out string rejectionReason)
         {
             if (!TryParseInputMessage(line, out var message, out rejectionReason))
                 return false;
@@ -513,7 +622,7 @@ namespace RoboClash
                 yawDelta = hasYawDelta ? Mathf.Clamp(message.gyroYawDelta, -60f, 60f) : 0f;
                 pitchDelta = hasPitchDelta ? Mathf.Clamp(message.gyroPitchDelta, -60f, 60f) : 0f;
             }
-            CurrentInput = new RoboClashPhoneInput
+            state.CurrentInput = new RoboClashPhoneInput
             {
                 MoveForward = Mathf.Clamp(message.moveForward, -1f, 1f),
                 MoveHorizontal = Mathf.Clamp(message.aimHorizontal, -1f, 1f),
@@ -529,31 +638,31 @@ namespace RoboClash
                 AccelerometerY = message.accelY,
                 AccelerometerZ = message.accelZ
             };
-            lock (aimDeltaLock)
+            lock (state.AimDeltaLock)
             {
                 if (message.recenter)
                 {
-                    SetSensorReference(CurrentInput.AccelerometerValid,
-                        CurrentInput.AccelerometerX, CurrentInput.AccelerometerY,
-                        CurrentInput.AccelerometerZ, CurrentInput.CompassValid,
-                        CurrentInput.CompassHeading);
-                    recenterPressed = true;
+                    SetSensorReference(state, state.CurrentInput.AccelerometerValid,
+                        state.CurrentInput.AccelerometerX, state.CurrentInput.AccelerometerY,
+                        state.CurrentInput.AccelerometerZ, state.CurrentInput.CompassValid,
+                        state.CurrentInput.CompassHeading);
+                    state.RecenterPressed = true;
                 }
 
-                ApplySensorFusion(yawDelta, pitchDelta, hasGyroAimDeltas,
-                    CurrentInput.GyroTurn, CurrentInput.GyroPitch,
-                    CurrentInput.AccelerometerValid, CurrentInput.AccelerometerX,
-                    CurrentInput.AccelerometerY, CurrentInput.AccelerometerZ,
-                    CurrentInput.CompassValid, CurrentInput.CompassHeading);
+                ApplySensorFusion(state, yawDelta, pitchDelta, hasGyroAimDeltas,
+                    state.CurrentInput.GyroTurn, state.CurrentInput.GyroPitch,
+                    state.CurrentInput.AccelerometerValid, state.CurrentInput.AccelerometerX,
+                    state.CurrentInput.AccelerometerY, state.CurrentInput.AccelerometerZ,
+                    state.CurrentInput.CompassValid, state.CurrentInput.CompassHeading);
             }
-            jumpPressed |= message.jump && !lastJump;
-            reloadPressed |= message.reload && !lastReload;
-            abilityPressed |= message.ability && !lastAbility;
-            ultimatePressed |= message.ultimate && !lastUltimate;
-            lastJump = message.jump;
-            lastReload = message.reload;
-            lastAbility = message.ability;
-            lastUltimate = message.ultimate;
+            state.JumpPressed |= message.jump && !state.LastJump;
+            state.ReloadPressed |= message.reload && !state.LastReload;
+            state.AbilityPressed |= message.ability && !state.LastAbility;
+            state.UltimatePressed |= message.ultimate && !state.LastUltimate;
+            state.LastJump = message.jump;
+            state.LastReload = message.reload;
+            state.LastAbility = message.ability;
+            state.LastUltimate = message.ultimate;
             rejectionReason = null;
             return true;
         }
@@ -643,42 +752,53 @@ namespace RoboClash
 
         public void ConsumeAimDelta(out float yawDeg, out float pitchDeg)
         {
-            lock (aimDeltaLock)
-            {
-                yawDeg = accumulatedGyroYawDelta;
-                pitchDeg = accumulatedGyroPitchDelta;
-                accumulatedGyroYawDelta = 0f;
-                accumulatedGyroPitchDelta = 0f;
-            }
+            ConsumeAimDelta(0, out yawDeg, out pitchDeg);
         }
 
-        private void ResetAimDelta()
+        public void ConsumeAimDelta(int playerIndex, out float yawDeg, out float pitchDeg)
         {
-            lock (aimDeltaLock)
+            if (playerIndex < 0 || playerIndex >= phoneStates.Length)
             {
-                accumulatedGyroYawDelta = 0f;
-                accumulatedGyroPitchDelta = 0f;
-                lastGyroAimDeltaTime = 0f;
-                hasReceivedGyroAimDeltas = false;
-                hasSensorReference = false;
-                hasCompassReference = false;
-                fusedYaw = 0f;
-                fusedPitch = 0f;
-                lastFusionSampleTime = 0f;
-                recenterPressed = false;
+                yawDeg = pitchDeg = 0f;
+                return;
+            }
+            var state = phoneStates[playerIndex];
+            lock (state.AimDeltaLock)
+            {
+                yawDeg = state.AccumulatedGyroYawDelta;
+                pitchDeg = state.AccumulatedGyroPitchDelta;
+                state.AccumulatedGyroYawDelta = 0f;
+                state.AccumulatedGyroPitchDelta = 0f;
             }
         }
 
-        private void ApplySensorFusion(float gyroYawDelta, float gyroPitchDelta,
+        private static void ResetAimDelta(PhoneState state)
+        {
+            lock (state.AimDeltaLock)
+            {
+                state.AccumulatedGyroYawDelta = 0f;
+                state.AccumulatedGyroPitchDelta = 0f;
+                state.LastGyroAimDeltaTime = 0f;
+                state.HasReceivedGyroAimDeltas = false;
+                state.HasSensorReference = false;
+                state.HasCompassReference = false;
+                state.FusedYaw = 0f;
+                state.FusedPitch = 0f;
+                state.LastFusionSampleTime = 0f;
+                state.RecenterPressed = false;
+            }
+        }
+
+        private void ApplySensorFusion(PhoneState state, float gyroYawDelta, float gyroPitchDelta,
             bool hasGyroDelta, float gyroTurn, float gyroPitchRate,
             bool accelerometerValid, float accelX, float accelY,
             float accelZ, bool compassValid, float compassHeading)
         {
             var now = Time.realtimeSinceStartup;
-            var elapsed = lastFusionSampleTime > 0f
-                ? Mathf.Clamp(now - lastFusionSampleTime, 0.001f, 0.25f)
+            var elapsed = state.LastFusionSampleTime > 0f
+                ? Mathf.Clamp(now - state.LastFusionSampleTime, 0.001f, 0.25f)
                 : 0.033f;
-            lastFusionSampleTime = now;
+            state.LastFusionSampleTime = now;
 
             if (!hasGyroDelta && (accelerometerValid || compassValid))
             {
@@ -687,69 +807,69 @@ namespace RoboClash
                 hasGyroDelta = true;
             }
 
-            var startYaw = fusedYaw;
-            var startPitch = fusedPitch;
+            var startYaw = state.FusedYaw;
+            var startPitch = state.FusedPitch;
             if (hasGyroDelta)
             {
-                fusedYaw += gyroYawDelta;
-                fusedPitch += gyroPitchDelta;
+                state.FusedYaw += gyroYawDelta;
+                state.FusedPitch += gyroPitchDelta;
             }
 
             if (accelerometerValid)
             {
                 var measuredPitch = GetAccelerometerPitch(accelX, accelY, accelZ);
-                if (!hasSensorReference)
-                    SetSensorReference(true, accelX, accelY, accelZ, compassValid, compassHeading);
-                var correctedPitch = measuredPitch + accelerometerPitchOffset;
+                if (!state.HasSensorReference)
+                    SetSensorReference(state, true, accelX, accelY, accelZ, compassValid, compassHeading);
+                var correctedPitch = measuredPitch + state.AccelerometerPitchOffset;
                 var correction = 1f - Mathf.Exp(-elapsed / SensorFusionTimeConstant);
-                fusedPitch = Mathf.Lerp(fusedPitch, correctedPitch, correction);
+                state.FusedPitch = Mathf.Lerp(state.FusedPitch, correctedPitch, correction);
             }
 
             if (compassValid)
             {
-                if (!hasCompassReference)
-                    SetSensorReference(accelerometerValid, accelX, accelY, accelZ,
+                if (!state.HasCompassReference)
+                    SetSensorReference(state, accelerometerValid, accelX, accelY, accelZ,
                         true, compassHeading);
-                var correctedYaw = compassYawReference +
-                                   Mathf.DeltaAngle(compassHeadingReference, compassHeading);
+                var correctedYaw = state.CompassYawReference +
+                                   Mathf.DeltaAngle(state.CompassHeadingReference, compassHeading);
                 var correction = 1f - Mathf.Exp(-elapsed / SensorFusionTimeConstant);
-                fusedYaw = Mathf.Lerp(fusedYaw, correctedYaw, correction);
+                state.FusedYaw = Mathf.Lerp(state.FusedYaw, correctedYaw, correction);
             }
 
-            var fusedYawDelta = fusedYaw - startYaw;
-            var fusedPitchDelta = fusedPitch - startPitch;
-            var pendingYaw = accumulatedGyroYawDelta + fusedYawDelta;
-            var pendingPitch = accumulatedGyroPitchDelta + fusedPitchDelta;
+            var fusedYawDelta = state.FusedYaw - startYaw;
+            var fusedPitchDelta = state.FusedPitch - startPitch;
+            var pendingYaw = state.AccumulatedGyroYawDelta + fusedYawDelta;
+            var pendingPitch = state.AccumulatedGyroPitchDelta + fusedPitchDelta;
             if (!IsFinite(pendingYaw) || !IsFinite(pendingPitch))
                 return;
 
-            accumulatedGyroYawDelta = pendingYaw;
-            accumulatedGyroPitchDelta = pendingPitch;
+            state.AccumulatedGyroYawDelta = pendingYaw;
+            state.AccumulatedGyroPitchDelta = pendingPitch;
             if (hasGyroDelta || accelerometerValid || compassValid)
             {
-                hasReceivedGyroAimDeltas = true;
-                lastGyroAimDeltaTime = now;
+                state.HasReceivedGyroAimDeltas = true;
+                state.LastGyroAimDeltaTime = now;
             }
         }
 
-        private void SetSensorReference(bool accelerometerValid, float accelX,
+        private static void SetSensorReference(PhoneState state, bool accelerometerValid, float accelX,
             float accelY, float accelZ, bool compassValid, float compassHeading)
         {
             if (accelerometerValid)
             {
-                accelerometerPitchOffset = fusedPitch -
-                                           GetAccelerometerPitch(accelX, accelY, accelZ);
-                hasSensorReference = true;
+                state.AccelerometerPitchOffset = state.FusedPitch -
+                                                 GetAccelerometerPitch(accelX, accelY, accelZ);
+                state.HasSensorReference = true;
             }
 
             if (compassValid)
             {
-                compassHeadingReference = compassHeading;
-                compassYawReference = fusedYaw;
-                hasCompassReference = true;
+                state.CompassHeadingReference = compassHeading;
+                state.CompassYawReference = state.FusedYaw;
+                state.HasCompassReference = true;
             }
 
-            lastFusionSampleTime = Time.realtimeSinceStartup;
+            state.LastFusionSampleTime = Time.realtimeSinceStartup;
         }
 
         private static bool IsValidAcceleration(float x, float y, float z)
@@ -763,39 +883,40 @@ namespace RoboClash
             return Mathf.Atan2(-x, Mathf.Sqrt(y * y + z * z)) * Mathf.Rad2Deg;
         }
 
-        private void CloseClient()
+        private void CloseClient(int playerIndex)
         {
-            connected = false;
-            hasValidInput = false;
+            if (playerIndex < 0 || playerIndex >= phoneStates.Length)
+                return;
+            var state = phoneStates[playerIndex];
+            TcpClient activeClient;
             lock (clientLock)
             {
-                clientGeneration++;
-                if (client != null)
-                {
-                    client.Close();
-                    client = null;
-                }
+                state.Connected = false;
+                state.HasValidInput = false;
+                state.Generation++;
+                activeClient = state.Client;
+                state.Client = null;
             }
-            ClearPendingMessages();
-            ResetAimDelta();
-            ResetInput();
+            activeClient?.Close();
+            ClearPendingMessages(playerIndex);
+            ResetInput(state);
         }
 
-        private void ResetInput()
+        private static void ResetInput(PhoneState state)
         {
-            CurrentInput = default;
-            ResetAimDelta();
-            lastJump = false;
-            lastReload = false;
-            lastAbility = false;
-            lastUltimate = false;
-            jumpPressed = false;
-            reloadPressed = false;
-            abilityPressed = false;
-            ultimatePressed = false;
+            state.CurrentInput = default;
+            ResetAimDelta(state);
+            state.LastJump = false;
+            state.LastReload = false;
+            state.LastAbility = false;
+            state.LastUltimate = false;
+            state.JumpPressed = false;
+            state.ReloadPressed = false;
+            state.AbilityPressed = false;
+            state.UltimatePressed = false;
         }
 
-        private TaskCompletionSource<string> EnqueueMessage(string line, int generation)
+        private TaskCompletionSource<string> EnqueueMessage(string line, int playerIndex, int generation)
         {
             var completion = new TaskCompletionSource<string>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
@@ -806,6 +927,7 @@ namespace RoboClash
                 pendingMessages.Enqueue(new PendingMessage
                 {
                     Line = line,
+                    PlayerIndex = playerIndex,
                     Generation = generation,
                     Completion = completion
                 });
@@ -828,14 +950,21 @@ namespace RoboClash
             return false;
         }
 
-        private void ClearPendingMessages()
+        private void ClearPendingMessages(int playerIndex = -1)
         {
             lock (messageLock)
             {
+                var retained = new Queue<PendingMessage>();
                 while (pendingMessages.Count > 0)
-                    pendingMessages.Dequeue().Completion.TrySetResult(
-                        "connection closed before packet processing");
-                pendingMessages.Clear();
+                {
+                    var message = pendingMessages.Dequeue();
+                    if (playerIndex < 0 || message.PlayerIndex == playerIndex)
+                        message.Completion.TrySetResult("connection closed before packet processing");
+                    else
+                        retained.Enqueue(message);
+                }
+                while (retained.Count > 0)
+                    pendingMessages.Enqueue(retained.Dequeue());
             }
         }
 
@@ -912,19 +1041,24 @@ namespace RoboClash
         private void StopServer()
         {
             stopping = true;
-            connected = false;
-            hasValidInput = false;
-            TcpClient activeClient;
-            Thread activeClientThread;
+            var activeClients = new TcpClient[phoneStates.Length];
+            var activeClientThreads = new Thread[phoneStates.Length];
             lock (clientLock)
             {
-                clientGeneration++;
-                activeClient = client;
-                activeClientThread = clientThread;
-                client = null;
-                clientThread = null;
+                for (var i = 0; i < phoneStates.Length; i++)
+                {
+                    var state = phoneStates[i];
+                    state.Generation++;
+                    state.Connected = false;
+                    state.HasValidInput = false;
+                    activeClients[i] = state.Client;
+                    activeClientThreads[i] = state.ClientThread;
+                    state.Client = null;
+                    state.ClientThread = null;
+                }
             }
-            activeClient?.Close();
+            foreach (var activeClient in activeClients)
+                activeClient?.Close();
             try
             {
                 listener?.Stop();
@@ -934,9 +1068,13 @@ namespace RoboClash
                 Debug.LogWarning($"Phone controller listener shutdown reported: {exception.Message}", this);
             }
 
-            if (activeClientThread != null && activeClientThread.IsAlive &&
-                Thread.CurrentThread != activeClientThread && !activeClientThread.Join(500))
-                Debug.LogWarning("Phone controller client did not stop within 500 ms.", this);
+            for (var i = 0; i < activeClientThreads.Length; i++)
+            {
+                var activeClientThread = activeClientThreads[i];
+                if (activeClientThread != null && activeClientThread.IsAlive &&
+                    Thread.CurrentThread != activeClientThread && !activeClientThread.Join(500))
+                    Debug.LogWarning($"Phone {i + 1} controller did not stop within 500 ms.", this);
+            }
 
             if (listenerThread != null && listenerThread.IsAlive &&
                 Thread.CurrentThread != listenerThread && !listenerThread.Join(500))
@@ -944,7 +1082,8 @@ namespace RoboClash
 
             listener = null;
             listenerThread = null;
-            ResetInput();
+            foreach (var state in phoneStates)
+                ResetInput(state);
             ClearPendingMessages();
         }
 
