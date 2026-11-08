@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 5db87705fcb03bc46b84ad657f7b590a
+timeCreated: 1513688302
+licenseType: Store
+NativeFormatImporter:
+  mainObjectFileID: 9100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 107895
+  packageName: Giant Mech & Pilot
+  packageVersion: 1.0
+  assetPath: Assets/Robot&Pilot/Assets/Controllers/Pilot.controller
+  uploadId: 221104

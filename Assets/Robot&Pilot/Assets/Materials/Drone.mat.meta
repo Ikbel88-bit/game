@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 8bdd5f93c4e75484ab6fdf43a3c88a1c
+timeCreated: 1513353281
+licenseType: Store
+NativeFormatImporter:
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 107895
+  packageName: Giant Mech & Pilot
+  packageVersion: 1.0
+  assetPath: Assets/Robot&Pilot/Assets/Materials/Drone.mat
+  uploadId: 221104

@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: fa87c4777ffd37c4182754cd74f0cfe9
+timeCreated: 1513693808
+licenseType: Store
+NativeFormatImporter:
+  mainObjectFileID: 9100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 107895
+  packageName: Giant Mech & Pilot
+  packageVersion: 1.0
+  assetPath: Assets/Robot&Pilot/Assets/Controllers/Hair.controller
+  uploadId: 221104

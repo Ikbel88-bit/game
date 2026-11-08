@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 4e8ed4effa1580c45bb0dc575725de9a
+timeCreated: 1513622809
+licenseType: Store
+NativeFormatImporter:
+  mainObjectFileID: 9100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 107895
+  packageName: Giant Mech & Pilot
+  packageVersion: 1.0
+  assetPath: Assets/Robot&Pilot/Assets/Controllers/Cannon.controller
+  uploadId: 221104

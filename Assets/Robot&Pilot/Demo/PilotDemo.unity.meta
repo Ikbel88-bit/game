@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 69f4cdfc9af521045a35c9fa3dcdc49e
+timeCreated: 1513195067
+licenseType: Store
+DefaultImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 107895
+  packageName: Giant Mech & Pilot
+  packageVersion: 1.0
+  assetPath: Assets/Robot&Pilot/Demo/PilotDemo.unity
+  uploadId: 221104

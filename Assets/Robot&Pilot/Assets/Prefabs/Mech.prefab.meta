@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 083174d57197e454093fe0b370ef6622
+timeCreated: 1513873793
+licenseType: Store
+NativeFormatImporter:
+  mainObjectFileID: 100100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 107895
+  packageName: Giant Mech & Pilot
+  packageVersion: 1.0
+  assetPath: Assets/Robot&Pilot/Assets/Prefabs/Mech.prefab
+  uploadId: 221104
